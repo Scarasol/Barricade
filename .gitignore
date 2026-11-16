@@ -1,0 +1,50 @@
+# eclipse
+bin
+*.launch
+.settings
+.metadata
+.classpath
+.project
+
+# idea
+out
+*.ipr
+*.iws
+*.iml
+.idea
+
+# gradle
+build
+.gradle
+
+# other
+eclipse
+run
+
+# Files from Forge MDK
+forge*changelog.txt
+
+# Local documentation, tooling, and backups
+/docs/
+/tool/
+/tools/
+/backups/
+/AGENTS.md
+
+# Runtime and generated artifacts
+/logs/
+/run-data/
+/libs/
+*.log
+*.mp4
+*.jfr
+hs_err_pid*
+replay_pid*
+
+# Unmodified Forge MDK reference files
+/changelog.txt
+/README.txt
+
+# OS metadata
+.DS_Store
+Thumbs.db

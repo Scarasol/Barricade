@@ -1,0 +1,15 @@
+{
+  "replace": false,
+  "values": [
+    "#minecraft:arrows",
+    "minecraft:trident",
+    {
+      "id": "tacz:bullet",
+      "required": false
+    },
+    {
+      "id": "superbwarfare:projectile",
+      "required": false
+    }
+  ]
+}

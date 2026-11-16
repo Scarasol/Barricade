@@ -1,0 +1,20 @@
+{
+  "models": [
+    {"id":"oak_log","block":"minecraft:stripped_oak_log[axis=x]","size":[1,1,1],"weight":1},
+    {"id":"spruce_log","block":"minecraft:stripped_spruce_log[axis=x]","size":[1,1,1],"weight":1},
+    {"id":"cobblestone","block":"minecraft:cobblestone","size":[1,1,1],"weight":1},
+    {"id":"barrel","block":"minecraft:barrel[facing=up,open=false]","size":[1,1,1],"weight":2},
+    {"id":"bookshelf","block":"minecraft:bookshelf","size":[1,1,1],"weight":2},
+    {"id":"oak_door","block":"minecraft:oak_door[facing=east]","size":[1,1,1],"weight":3},
+    {"id":"spruce_door","block":"minecraft:spruce_door[facing=east]","size":[1,1,1],"weight":3},
+    {"id":"oak_post","block":"minecraft:oak_fence","size":[1,1,1],"weight":2},
+    {"id":"wall_post","block":"minecraft:cobblestone_wall","size":[1,1,1],"weight":2},
+    {"id":"oak_slab","block":"minecraft:oak_slab[type=bottom]","size":[1,1,1],"weight":3},
+    {"id":"spruce_slab","block":"minecraft:spruce_slab[type=bottom]","size":[1,1,1],"weight":3},
+    {"id":"stone_slab","block":"minecraft:stone_brick_slab[type=bottom]","size":[1,1,1],"weight":2},
+    {"id":"oak_stairs","block":"minecraft:oak_stairs[facing=east]","size":[1,1,1],"weight":2},
+    {"id":"spruce_trapdoor","block":"minecraft:spruce_trapdoor","size":[1,1,1],"weight":3},
+    {"id":"oak_trapdoor","block":"minecraft:oak_trapdoor","size":[1,1,1],"weight":2},
+    {"id":"red_bed","block":"minecraft:red_bed","size":[1,1,1],"weight":3}
+  ]
+}

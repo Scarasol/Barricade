@@ -1,0 +1,204 @@
+package com.scarasol.barricade.client;
+
+import static org.junit.jupiter.api.Assertions.*;
+import com.scarasol.barricade.pile.*;
+import com.scarasol.barricade.recipe.*;
+import com.scarasol.barricade.sampling.MemoryFixture;
+import com.scarasol.barricade.sampling.MemoryLevel;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.Blocks;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
+import org.junit.jupiter.api.Test;
+
+class FieldEmbeddingTest {
+    private static final FieldDefinition DEFINITION = FieldDefinition.create(42,
+            PaletteSpec.create(List.of(new PileModels.Candidate("cube", "minecraft:stone", 1)), "test"));
+    private static PileModel cube(float size) {
+        return new PileModel("cube", "minecraft:stone", size, size, size, 1, List.of(CollisionBox.CUBE));
+    }
+    private static FieldObject object(BlockPos origin, BlockPos owner, int id, PileModel model,
+                                      Vector3f center, Quaternionf rotation) {
+        return new FieldObject(new FieldObject.Key("test", DEFINITION, "geometry", new GridPos(0, 0, 0), 2, id), owner,
+                PilePiece.create(model, center.x + (origin.getX() - owner.getX()),
+                        center.y + (origin.getY() - owner.getY()), center.z + (origin.getZ() - owner.getZ()), 1, rotation));
+    }
+    private static FieldRegion region(long id, Set<BlockPos> cells, Map<BlockPos, EmbeddedBlock> embedded) {
+        return new FieldRegion(new UUID(1, id), 1, DEFINITION, cells, new SpatialMask(), embedded);
+    }
+    private static List<FieldObject> display(FieldRegion region, List<FieldObject> objects, MemoryLevel memory,
+                                             Collection<FieldRegion> regions) {
+        return display(region, objects, memory, regions, VisualMeshFixture::collisionProxy);
+    }
+    private static List<FieldObject> display(FieldRegion region, List<FieldObject> objects, MemoryLevel memory,
+                                             Collection<FieldRegion> regions, Function<PileModel, StaticMesh> meshes) {
+        FieldOverlay overlay = new FieldOverlay(region, 1, objects, regions);
+        assertTrue(overlay.advance(new TerrainShapes(memory, ignored -> true, meshes),
+                Integer.MAX_VALUE, Long.MAX_VALUE));
+        return overlay.visible();
+    }
+
+    @Test void wholeEmbeddedEnvelopeIncludesTheSpaceBetweenLegsAndOnlyFallsBackWithoutAnAlternative() {
+        BlockPos pos = new BlockPos(-17, -60, -1);
+        var memory = MemoryFixture.create(false);
+        memory.context(Map.of(pos, Blocks.FURNACE.defaultBlockState()), Map.of());
+        var embedded = new EmbeddedBlock(pos, 7, 1);
+        var visual = embedded.transform(embedded.model(memory));
+        var small = object(pos, pos.east(), 0, cube(.2f), visual.transformPoint(.5f, .5f, .5f), visual.rotation());
+        var clear = object(pos, pos.east(), 1, cube(.2f), new Vector3f(2.5f, .5f, .5f), new Quaternionf());
+        var during = region(1, Set.of(pos, pos.east(2)), Map.of(pos, embedded));
+        try (StaticMesh frame = VisualMeshFixture.boxes(
+                new CollisionBox(0, .85f, 0, 1, 1, 1),
+                new CollisionBox(0, 0, 0, .1f, .85f, .1f),
+                new CollisionBox(.9f, 0, .9f, 1, .85f, 1))) {
+            Function<PileModel, StaticMesh> meshes = model -> model.id().startsWith("embedded:")
+                    ? frame : VisualMeshFixture.collisionProxy(model);
+            assertTrue(FieldVisibility.centerInside(small,
+                    new FieldVisibility.Shape(pos, visual.colliders(0, 0, 0), true)));
+            assertEquals(List.of(clear), display(during, List.of(small, clear), memory, List.of(during), meshes),
+                    "The table's empty middle is still inside its one whole-model box");
+            assertEquals(List.of(small), display(during, List.of(small), memory, List.of(during), meshes));
+            assertEquals(0, memory.chunkRequests());
+        }
+    }
+
+    @Test void wholePileEnvelopeDoesNotInspectSeparateLegsOrFaces() {
+        BlockPos pos = BlockPos.ZERO;
+        var memory = MemoryFixture.create(false);
+        memory.context(Map.of(pos, Blocks.FURNACE.defaultBlockState()), Map.of());
+        var embedded = new EmbeddedBlock(pos, 7, 1);
+        var visual = embedded.transform(embedded.model(memory));
+        var furniture = object(pos, pos, 0, cube(1), visual.transformPoint(.5f, .5f, .5f), visual.rotation());
+        var clear = object(pos, pos, 1, cube(.2f), new Vector3f(2.5f, .5f, .5f), new Quaternionf());
+        var during = region(1, Set.of(pos, pos.east(2)), Map.of(pos, embedded));
+        try (StaticMesh frame = VisualMeshFixture.boxes(
+                new CollisionBox(0, .85f, 0, 1, 1, 1),
+                new CollisionBox(0, 0, 0, .1f, .85f, .1f),
+                new CollisionBox(.9f, 0, .9f, 1, .85f, 1));
+             StaticMesh small = VisualMeshFixture.boxes(new CollisionBox(.3f, .3f, .3f, .7f, .7f, .7f))) {
+            AtomicInteger captures = new AtomicInteger();
+            Function<PileModel, StaticMesh> meshes = model -> {
+                captures.incrementAndGet();
+                return model.id().startsWith("embedded:") ? small : frame;
+            };
+            assertEquals(List.of(clear), display(during, List.of(furniture, clear), memory, List.of(during), meshes));
+            assertEquals(List.of(furniture), display(during, List.of(furniture), memory, List.of(during), meshes));
+            assertTrue(captures.get() > 0, "The overlay obtains the embedded object's whole visible envelope");
+            var before = region(1, during.domain(), Map.of());
+            captures.set(0);
+            assertEquals(List.of(furniture), display(before, List.of(furniture), memory, List.of(before), meshes));
+            assertEquals(0, captures.get(), "Ordinary and cross-tag display must not pay for mesh intersection");
+            assertEquals(0, memory.chunkRequests());
+        }
+    }
+
+    @Test void failedEmbeddedCaptureUsesTheNativeBlockThatIsActuallyStillVisible() {
+        BlockPos pos = BlockPos.ZERO;
+        var memory = MemoryFixture.create(false);
+        memory.context(Map.of(pos, Blocks.FURNACE.defaultBlockState()), Map.of());
+        var embedded = new EmbeddedBlock(pos, 7, 1);
+        var inside = object(pos, pos.east(), 0, cube(.2f), new Vector3f(.5f), new Quaternionf());
+        var outside = object(pos, pos.east(), 1, cube(.2f), new Vector3f(1.2f, .5f, .5f), new Quaternionf());
+        var during = region(1, Set.of(pos, pos.east()), Map.of(pos, embedded));
+        assertEquals(List.of(outside), display(during, List.of(inside, outside), memory, List.of(during),
+                model -> model.id().startsWith("embedded:") ? null : VisualMeshFixture.collisionProxy(model)));
+        assertEquals(0, memory.chunkRequests());
+    }
+    @Test void embeddingKeepsShallowContactButRejectsDeepCrossingAndRemovalRestoresExactObjects() {
+        for (BlockPos pos : List.of(BlockPos.ZERO, new BlockPos(-17, -60, -1))) {
+            var memory = MemoryFixture.create(false);
+            memory.context(Map.of(pos, Blocks.FURNACE.defaultBlockState()), Map.of());
+            var embedded = new EmbeddedBlock(pos, 7, 1);
+            var visual = embedded.transform(embedded.model(memory));
+            Set<BlockPos> domain = new HashSet<>();
+            BlockPos.betweenClosed(pos.offset(-1, -1, -1), pos.offset(2, 2, 2)).forEach(cell -> domain.add(cell.immutable()));
+            var inside = object(pos, pos, 0, cube(.3f), visual.transformPoint(.5f, .5f, .5f), visual.rotation());
+            var protruding = object(pos, pos, 1, cube(.3f), visual.transformPoint(1.05f, .5f, .5f), visual.rotation());
+            var shallow = object(pos, pos, 3, cube(.3f),
+                    visual.transformPoint(1 + (.15f - .02f) / .98f, .5f, .5f), visual.rotation());
+            var far = object(pos, pos.east(2), 2, cube(.3f), new Vector3f(2.5f, .5f, .5f), new Quaternionf());
+            var shape = new FieldVisibility.Shape(pos, visual.colliders(0, 0, 0), true);
+            assertTrue(FieldVisibility.hit(protruding, shape), "The body must genuinely intersect the embedded collider");
+            var base = List.of(inside, protruding, shallow, far);
+            var before = region(1, domain, Map.of());
+            assertEquals(base, display(before, base, memory, List.of(before)));
+            var during = region(1, domain, Map.of(pos, embedded));
+            assertEquals(List.of(shallow, far), display(during, base, memory, List.of(during)));
+            var loaded = FieldRegion.load(during.save());
+            assertEquals(List.of(shallow, far), display(loaded, base, memory, List.of(loaded)));
+            memory.reset();
+            assertEquals(base, display(before, base, memory, List.of(before)), "Unembedding restores identities and transforms, not replacements");
+            assertTrue(before.mask().isEmpty());
+            assertTrue(during.mask().isEmpty());
+            assertEquals(0, memory.chunkRequests());
+        }
+    }
+    @Test void aThinEmbeddedShapeOnlyCoversCentersInsideItsTransformedSolidPart() {
+        BlockPos pos = new BlockPos(-17, -60, -1);
+        var memory = MemoryFixture.create(false);
+        memory.context(Map.of(pos, Blocks.OAK_SLAB.defaultBlockState()), Map.of());
+        var embedded = new EmbeddedBlock(pos, 11, 1);
+        var visual = embedded.transform(embedded.model(memory));
+        var solid = object(pos, pos, 0, cube(.1f), visual.transformPoint(.5f, .25f, .5f), visual.rotation());
+        var empty = object(pos, pos, 1, cube(.1f), visual.transformPoint(.5f, .85f, .5f), visual.rotation());
+        Set<BlockPos> domain = new HashSet<>();
+        BlockPos.betweenClosed(pos.offset(-1, -1, -1), pos.offset(1, 1, 1)).forEach(cell -> domain.add(cell.immutable()));
+        var during = region(1, domain, Map.of(pos, embedded));
+        assertEquals(List.of(empty), display(during, List.of(solid, empty), memory, List.of(during)));
+        assertEquals(0, memory.chunkRequests());
+    }
+    @Test void initialTerrainUsesOneMinimumFallbackAndOnlyReloadCanReadLaterNeighbors() {
+        BlockPos pos = new BlockPos(-17, -60, -1);
+        var memory = MemoryFixture.create(false);
+        memory.context(Map.of(pos, Blocks.FURNACE.defaultBlockState()), Map.of());
+        var protruding = object(pos, pos.east(), 0, cube(.4f), new Vector3f(1.1f, .5f, .5f), new Quaternionf());
+        var deeper = object(pos, pos.east(), 1, cube(.4f), new Vector3f(1.02f, .5f, .5f), new Quaternionf());
+        var clear = object(pos, pos.east(), 2, cube(.4f), new Vector3f(1.5f, .5f, .5f), new Quaternionf());
+        var source = region(1, Set.of(pos.east()), Map.of());
+        var terrain = new TerrainShapes(memory, ignored -> true);
+        var first = new FieldOverlay(source, 1, List.of(protruding, deeper), List.of(source));
+        assertTrue(first.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
+        assertEquals(List.of(protruding), first.visible());
+        var second = new FieldOverlay(source, 2, List.of(protruding, deeper, clear), List.of(source));
+        assertTrue(second.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
+        assertEquals(List.of(clear), second.visible());
+        memory.reset();
+        terrain.invalidateEmbedded();
+        var unchanged = new FieldOverlay(source, 3, List.of(protruding, deeper, clear), List.of(source));
+        assertTrue(unchanged.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
+        assertEquals(List.of(clear), unchanged.visible());
+        var restored = FieldRegion.load(source.save());
+        assertEquals(List.of(protruding, deeper, clear),
+                display(restored, List.of(protruding, deeper, clear), memory, List.of(restored)));
+        memory.context(Map.of(pos, Blocks.FURNACE.defaultBlockState()), Map.of());
+        assertEquals(List.of(clear), display(restored, List.of(protruding, deeper, clear), memory, List.of(restored)));
+        assertEquals(0, memory.chunkRequests());
+    }
+    @Test void anotherRegionEmbeddingUsesTheSamePenetrationRankingAndRestoresExactObjects() {
+        BlockPos pos = new BlockPos(-17, -60, -1);
+        var memory = MemoryFixture.create(false);
+        memory.context(Map.of(pos, Blocks.FURNACE.defaultBlockState()), Map.of());
+        var embedded = new EmbeddedBlock(pos, 7, 1);
+        var visual = embedded.transform(embedded.model(memory));
+        var object = object(pos, pos.east(), 0, cube(1.4f), visual.transformPoint(.5f, .5f, .5f), new Quaternionf());
+        var shifted = object(pos, pos.east(), 1, cube(1.4f),
+                visual.transformPoint(.5f, .5f, .5f).add(.6f, 0, 0), new Quaternionf());
+        var clear = object(pos, pos.east(), 2, cube(.2f), new Vector3f(1.8f, .5f, .5f), new Quaternionf());
+        var source = region(1, Set.of(pos.east()), Map.of());
+        var host = region(2, Set.of(pos), Map.of(pos, embedded));
+        assertTrue(FieldVisibility.activated(object, source.domain()));
+        var view = new TerrainShapes(memory, ignored -> true, VisualMeshFixture::collisionProxy)
+                .view(Set.of(pos, pos.east()), Map.of(pos, embedded));
+        assertTrue(view.penetration(shifted) < view.penetration(object));
+        assertTrue(view.penetration(shifted) > 1f / 32);
+        assertEquals(List.of(shifted), display(source, List.of(object, shifted), memory, List.of(source, host)));
+        assertEquals(List.of(clear), display(source, List.of(object, shifted, clear), memory, List.of(source, host)));
+        var restoredHost = region(2, Set.of(pos), Map.of());
+        assertEquals(List.of(object, shifted, clear),
+                display(source, List.of(object, shifted, clear), memory, List.of(source, restoredHost)));
+        assertEquals(0, memory.chunkRequests());
+    }
+}

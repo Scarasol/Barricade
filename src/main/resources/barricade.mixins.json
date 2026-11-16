@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.scarasol.barricade.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "barricade.refmap.json",
+  "plugin": "com.scarasol.barricade.mixin.plugin.MixinPlugin",
+  "mixins": ["BlockItemSamplingMixin", "EmbeddedStateMixin", "WindowBoardsArrowMixin"],
+  "client": ["CompositeTypeAccess", "CompositeStateAccess", "RenderTypeAccess", "EmbeddedRenderMixin", "EmbeddedFaceMixin", "EmbeddedBlockEntityRenderMixin", "EmbeddedBlockEntityUpdateMixin", "WindowBoardsClientLevelMixin", "WindowBoardsClientChunksMixin", "WindowBoardsAttackMixin", "bettercombat.WindowBoardsBetterCombatAttackMixin", "bettercombat.WindowBoardsRadialFilterMixin"],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

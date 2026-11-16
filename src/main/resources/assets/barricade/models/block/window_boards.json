@@ -1,0 +1,56 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "minecraft:block/oak_planks",
+    "wood": "minecraft:block/oak_planks",
+    "nail": "minecraft:block/iron_block"
+  },
+  "elements": [
+    {
+      "from": [0, 3, 7], "to": [16, 7, 9],
+      "rotation": { "origin": [8, 5, 8], "axis": "z", "angle": 22.5 },
+      "faces": {
+        "north": { "texture": "#wood", "uv": [0, 0, 16, 4] },
+        "south": { "texture": "#wood", "uv": [0, 0, 16, 4] },
+        "east": { "texture": "#wood" }, "west": { "texture": "#wood" },
+        "up": { "texture": "#wood" }, "down": { "texture": "#wood" }
+      }
+    },
+    {
+      "from": [0, 10, 8], "to": [16, 13, 10],
+      "rotation": { "origin": [8, 11, 9], "axis": "z", "angle": -22.5 },
+      "faces": {
+        "north": { "texture": "#wood", "uv": [0, 5, 16, 8] },
+        "south": { "texture": "#wood", "uv": [0, 5, 16, 8] },
+        "east": { "texture": "#wood" }, "west": { "texture": "#wood" },
+        "up": { "texture": "#wood" }, "down": { "texture": "#wood" }
+      }
+    },
+    {
+      "from": [6, 0, 10], "to": [9, 16, 11],
+      "rotation": { "origin": [8, 8, 10], "axis": "z", "angle": -22.5 },
+      "faces": {
+        "north": { "texture": "#wood", "rotation": 90 },
+        "south": { "texture": "#wood", "rotation": 90 },
+        "east": { "texture": "#wood" }, "west": { "texture": "#wood" },
+        "up": { "texture": "#wood" }, "down": { "texture": "#wood" }
+      }
+    },
+    {
+      "from": [2, 3, 9], "to": [3, 4, 10],
+      "faces": {
+        "north": { "texture": "#nail" }, "south": { "texture": "#nail" },
+        "east": { "texture": "#nail" }, "west": { "texture": "#nail" },
+        "up": { "texture": "#nail" }, "down": { "texture": "#nail" }
+      }
+    },
+    {
+      "from": [13, 10, 10], "to": [14, 11, 11],
+      "faces": {
+        "north": { "texture": "#nail" }, "south": { "texture": "#nail" },
+        "east": { "texture": "#nail" }, "west": { "texture": "#nail" },
+        "up": { "texture": "#nail" }, "down": { "texture": "#nail" }
+      }
+    }
+  ]
+}

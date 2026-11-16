@@ -1,0 +1,436 @@
+#version 430
+#extension GL_ARB_gpu_shader_int64 : enable
+
+layout(local_size_x = 64) in;
+#ifdef GL_ARB_gpu_shader_int64
+layout(std430, binding = 0) buffer LayoutInput { int a[]; };
+layout(std430, binding = 1) buffer LayoutState { int s[]; };
+layout(location = 0) uniform int phase;
+layout(location = 1) uniform int stage;
+layout(location = 2) uniform int roundIndex;
+layout(location = 3) uniform int batchBase;
+layout(location = 4) uniform int batchCount;
+
+int box(int id) { return a[12] + id * 24; }
+ivec3 vec(int p) { return ivec3(a[p], a[p+1], a[p+2]); }
+int floorQ(int n) { return n >= 0 ? n / 1024 : -((-n + 1023) / 1024); }
+ivec3 floorQ(ivec3 n) { return ivec3(floorQ(n.x), floorQ(n.y), floorQ(n.z)); }
+int index(ivec3 p) {
+    p -= ivec3(a[0], a[1], a[2]);
+    if (any(lessThan(p, ivec3(0))) || any(greaterThanEqual(p, ivec3(a[3], a[4], a[5])))) return -1;
+    return (p.x * a[4] + p.y) * a[5] + p.z;
+}
+int cell(ivec3 p) { int i = index(p); return i < 0 ? 0 : a[a[8] + i]; }
+ivec3 extent(int p) { return abs(vec(p+3)) + abs(vec(p+6)) + abs(vec(p+9)); }
+int64_t dot64(i64vec3 p, i64vec3 q) { return p.x*q.x + p.y*q.y + p.z*q.z; }
+int dot32(ivec3 p, ivec3 q) { return p.x*q.x+p.y*q.y+p.z*q.z; }
+ivec3 crossAxis(ivec3 p, ivec3 q) {
+    ivec3 n=ivec3(p.y*q.z-p.z*q.y,p.z*q.x-p.x*q.z,p.x*q.y-p.y*q.x);
+    return n/max(1,(max(abs(n.x),max(abs(n.y),abs(n.z)))+255)/256);
+}
+bool separatesAxis(int p, int dy, int r, int ry, ivec3 n, int margin) {
+    ivec3 delta = vec(r)-vec(p)+ivec3(0,ry-dy,0);
+    int radii = margin*(abs(n.x)+abs(n.y)+abs(n.z));
+    for (int i = 3; i < 12; i += 3)
+        radii += abs(dot32(vec(p+i),n)) + abs(dot32(vec(r+i),n));
+    return abs(dot32(delta,n)) > radii;
+}
+bool separates(int p, int dy, int r, int ry, int u, int v, int margin) {
+    return separatesAxis(p,dy,r,ry,crossAxis(vec(u),vec(v)),margin);
+}
+bool intersects(int p, int dy, int r, int ry, int margin) {
+    if (margin<0) {
+        int smallest=2147483647;
+        for (int i=3; i<12; i+=3) {
+            ivec3 u=abs(vec(p+i)),v=abs(vec(r+i));
+            smallest=min(smallest,min(max(u.x,max(u.y,u.z)),max(v.x,max(v.y,v.z))));
+        }
+        margin=max(margin,-smallest/2);
+    }
+    ivec3 delta = vec(r)-vec(p)+ivec3(0,ry-dy,0);
+    if (any(greaterThan(abs(delta), extent(p)+extent(r)+ivec3(3)))) return false;
+    for (int i=0; i<3; i++) {
+        if (separatesAxis(p,dy,r,ry,vec(p+12+i*4),margin) || separatesAxis(p,dy,r,ry,vec(r+12+i*4),margin)) return false;
+        for (int j=0; j<3; j++) if (separates(p,dy,r,ry,p+3+i*3,r+3+j*3,margin)) return false;
+    }
+    return true;
+}
+int floorDivide(int n, int d) { return n>=0?n/d:-1-((-1-n)/d); }
+ivec2 clipSweep(ivec2 interval, int distance, int velocity, int radius) {
+    if (velocity==0) return abs(distance)<=radius?interval:ivec2(1,0);
+    if (velocity<0) { distance=-distance; velocity=-velocity; }
+    return ivec2(max(interval.x,-floorDivide(radius+distance,velocity)),
+            min(interval.y,floorDivide(radius-distance,velocity)));
+}
+ivec2 sweepAxis(int p, int r, int ry, ivec3 n, int margin, ivec2 interval) {
+    if (interval.x>interval.y) return interval;
+    int distance=dot32(vec(r)-vec(p)+ivec3(0,ry,0),n), radius=margin*(abs(n.x)+abs(n.y)+abs(n.z));
+    for (int i=3; i<12; i+=3)
+        radius+=abs(dot32(vec(p+i),n))+abs(dot32(vec(r+i),n));
+    return clipSweep(interval,distance,36*n.y,radius);
+}
+int firstIntersectionStep(int p, int r, int ry, int maximum, int margin) {
+    if (margin<0) {
+        int smallest=2147483647;
+        for (int i=3; i<12; i+=3) {
+            ivec3 u=abs(vec(p+i)),v=abs(vec(r+i));
+            smallest=min(smallest,min(max(u.x,max(u.y,u.z)),max(v.x,max(v.y,v.z))));
+        }
+        margin=max(margin,-smallest/2);
+    }
+    ivec2 interval=ivec2(1,maximum);
+    ivec3 delta=vec(r)-vec(p)+ivec3(0,ry,0), radius=extent(p)+extent(r)+ivec3(3);
+    for (int i=0; i<3 && interval.x<=interval.y; i++)
+        interval=clipSweep(interval,delta[i],i==1?36:0,radius[i]);
+    for (int i=0; i<3 && interval.x<=interval.y; i++) {
+        interval=sweepAxis(p,r,ry,vec(p+12+i*4),margin,interval);
+        interval=sweepAxis(p,r,ry,vec(r+12+i*4),margin,interval);
+        for (int j=0; j<3 && interval.x<=interval.y; j++)
+            interval=sweepAxis(p,r,ry,crossAxis(vec(p+3+i*3),vec(r+3+j*3)),margin,interval);
+    }
+    return interval.x>interval.y?maximum+1:interval.x;
+}
+bool containsPoint(int p, int dy, ivec3 point) {
+    if (any(greaterThan(abs(point-vec(p)-ivec3(0,dy,0)),extent(p)+ivec3(3)))) return false;
+    for (int i=0; i<3; i++) {
+        ivec3 n = vec(p+12+i*4);
+        if (abs(dot32(point-vec(p)-ivec3(0,dy,0),n)) > a[p+15+i*4]) return false;
+    }
+    return true;
+}
+void bounds(int start, int count, int dy, int margin, out ivec3 lo, out ivec3 hi) {
+    lo=ivec3(2147483647); hi=ivec3(-2147483647);
+    for (int i=0; i<count; i++) {
+        int p=box(start+i); ivec3 c=vec(p)+ivec3(0,dy,0), e=extent(p)+ivec3(margin);
+        lo=min(lo,floorQ(c-e)); hi=max(hi,floorQ(c+e));
+    }
+}
+bool nearDomain(ivec3 point) {
+    ivec3 p=floorQ(point);
+    if (cell(p)>0) return true;
+    ivec3 r=point-p*1024, lo=p-ivec3(lessThanEqual(r,ivec3(225))), hi=p+ivec3(greaterThanEqual(r,ivec3(799)));
+    for (int x=lo.x; x<=hi.x; x++) for (int y=lo.y; y<=hi.y; y++) for (int z=lo.z; z<=hi.z; z++) {
+        ivec3 q=ivec3(x,y,z);
+        if (cell(q)==0) continue;
+        ivec3 d=max(max(q*1024-point,ivec3(0)),point-(q+ivec3(1))*1024);
+        if (d.x*d.x+d.y*d.y+d.z*d.z<=225*225) return true;
+    }
+    return false;
+}
+bool fits(int id, int dy) {
+    int p=box(id); ivec3 lo,hi;
+    bounds(id,1,dy,0,lo,hi);
+    bool interior=true;
+    for (int x=lo.x; x<=hi.x && interior; x++) for (int y=lo.y; y<=hi.y && interior; y++)
+        for (int z=lo.z; z<=hi.z; z++) if (cell(ivec3(x,y,z))==0) { interior=false; break; }
+    if (interior) return true;
+    ivec3 u=vec(p+3),v=vec(p+6),w=vec(p+9);
+    int nx=max(2,(abs(u.x)+abs(u.y)+abs(u.z)+127)/128);
+    int ny=max(2,(abs(v.x)+abs(v.y)+abs(v.z)+127)/128);
+    int nz=max(2,(abs(w.x)+abs(w.y)+abs(w.z)+127)/128);
+    for (int i=0; i<=nx; i++) for (int j=0; j<=ny; j++) for (int k=0; k<=nz; k++) {
+        ivec3 point=vec(p)+ivec3(0,dy,0)+u*(i*2-nx)/nx+v*(j*2-ny)/ny+w*(k*2-nz)/nz;
+        if (!nearDomain(point)) return false;
+    }
+    return true;
+}
+bool blocked(int id, int dy, bool ray) {
+    int p=box(id); ivec3 lo,hi;
+    bounds(id,1,dy,3,lo,hi);
+    for (int x=lo.x; x<=hi.x; x++) for (int y=lo.y; y<=hi.y; y++) for (int z=lo.z; z<=hi.z; z++) {
+        int c=index(ivec3(x,y,z));
+        if (c<0) continue;
+        for (int node=s[s[8]+c]; node>=0; node=s[s[9]+node*2+1]) {
+            int e=s[6]+s[s[9]+node*2]*8;
+            ivec3 first=max(max(lo,ivec3(s[e+4],s[e+5],s[e+6])),ivec3(a[0],a[1],a[2]));
+            if (any(notEqual(ivec3(x,y,z),first))) continue;
+            if (ray && s[e+3]==1) continue;
+            for (int i=0; i<s[e+1]; i++)
+                if (intersects(p,dy,box(s[e]+i),s[e+2],!ray && s[e+3]==0?-5:3)) return true;
+        }
+    }
+    return false;
+}
+bool valid(int start, int count, int dy, bool ray) {
+    for (int i=0; i<count; i++) if ((!ray && !fits(start+i,dy)) || blocked(start+i,dy,ray)) return false;
+    return true;
+}
+int settle(int start, int count) {
+    for (int q=0; q<count; q++) if (!fits(start+q,-36)) return 0;
+    int steps=48;
+    for (int q=0; q<count; q++) {
+        int id=start+q, p=box(id); ivec3 lo,hi;
+        bounds(id,1,0,3,lo,hi);
+        lo.y=floorQ(a[p+1]-extent(p).y-3-steps*36);
+        for (int x=lo.x; x<=hi.x; x++) for (int y=lo.y; y<=hi.y; y++) for (int z=lo.z; z<=hi.z; z++) {
+            int c=index(ivec3(x,y,z));
+            if (c<0) continue;
+            for (int node=s[s[8]+c]; node>=0; node=s[s[9]+node*2+1]) {
+                int e=s[6]+s[s[9]+node*2]*8;
+                ivec3 first=max(max(lo,ivec3(s[e+4],s[e+5],s[e+6])),ivec3(a[0],a[1],a[2]));
+                if (any(notEqual(ivec3(x,y,z),first))) continue;
+                for (int i=0; i<s[e+1]; i++) {
+                    steps=min(steps,firstIntersectionStep(p,box(s[e]+i),s[e+2],steps,s[e+3]==0?-5:3)-1);
+                    if (steps==0) return 0;
+                }
+            }
+        }
+    }
+    for (int step=2; step<=steps; step++)
+        for (int q=0; q<count; q++) if (!fits(start+q,-36*step)) return -36*(step-1);
+    return -36*steps;
+}
+int cover(int start, int count, int dy, bool mark) {
+    int added=0; ivec3 lo,hi;
+    bounds(start,count,dy,0,lo,hi);
+    for (int x=lo.x; x<=hi.x; x++) for (int y=lo.y; y<=hi.y; y++) for (int z=lo.z; z<=hi.z; z++) {
+        int owner=cell(ivec3(x,y,z))-2;
+        if (owner<0) continue;
+        for (int smp=0; smp<125; smp++) {
+            int address=s[11]+owner*4+smp/32, bit=1<<(smp%32);
+            if (!mark && (s[address]&bit)!=0) continue;
+            ivec3 point=vec(a[17]+owner*375+smp*3);
+            for (int i=0; i<count; i++) if (containsPoint(box(start+i),dy,point)) {
+                added++;
+                if (mark) {
+                    int previous=atomicOr(s[address],bit);
+                    if ((previous&bit)==0) { atomicAdd(s[s[12]+owner],1); atomicAdd(s[4],1); }
+                }
+                break;
+            }
+        }
+    }
+    return added;
+}
+#if !defined(BARRICADE_STAGE) || BARRICADE_STAGE == 1
+void appendEntry(int start, int count, int dy, int guard) {
+    int entry=atomicAdd(s[1],1);
+    if (entry>=s[7]) { atomicOr(s[3],1); return; }
+    int e=s[6]+entry*8;
+    s[e]=start; s[e+1]=count; s[e+2]=dy; s[e+3]=guard;
+    ivec3 lo,hi; bounds(start,count,dy,3,lo,hi);
+    s[e+4]=lo.x; s[e+5]=lo.y; s[e+6]=lo.z;
+    for (int x=lo.x; x<=hi.x; x++) for (int y=lo.y; y<=hi.y; y++) for (int z=lo.z; z<=hi.z; z++) {
+        int c=index(ivec3(x,y,z));
+        if (c<0) continue;
+        int node=atomicAdd(s[2],1);
+        if (node>=s[10]) { atomicOr(s[3],1); return; }
+        int address=s[9]+node*2;
+        s[address]=entry; s[address+1]=atomicExchange(s[s[8]+c],node);
+    }
+}
+#endif
+#if !defined(BARRICADE_STAGE) || BARRICADE_STAGE == 0
+uint hashBits(uint value) {
+    value^=value>>16; value*=0x7feb352du; value^=value>>15; value*=0x846ca68bu;
+    return value^(value>>16);
+}
+void moveCandidate(int m, ivec3 point) {
+    ivec3 delta=point-vec(m+8);
+    for (int i=0; i<a[m+1]; i++) {
+        int p=box(a[m]+i);
+        a[p]+=delta.x; a[p+1]+=delta.y; a[p+2]+=delta.z;
+    }
+    a[m+8]=point.x; a[m+9]=point.y; a[m+10]=point.z;
+}
+ivec2 closest(ivec3 point) {
+    ivec3 c=floorQ(point);
+    int best=-1, settled=0;
+    int64_t distance=int64_t(0x7ffffffffffffffful);
+    for (int x=c.x-1; x<=c.x+1; x++) for (int y=c.y-1; y<=c.y+1; y++) for (int z=c.z-1; z<=c.z+1; z++) {
+        int cellIndex=index(ivec3(x,y,z));
+        if (cellIndex<0) continue;
+        for (int node=s[s[8]+cellIndex]; node>=0; node=s[s[9]+node*2+1]) {
+            int e=s[6]+s[s[9]+node*2]*8;
+            ivec3 first=max(max(c-ivec3(1),ivec3(s[e+4],s[e+5],s[e+6])),ivec3(a[0],a[1],a[2]));
+            if (any(notEqual(ivec3(x,y,z),first))) continue;
+            if (s[e+3]==1) continue;
+            for (int q=0; q<s[e+1]; q++) {
+                int p=box(s[e]+q);
+                i64vec3 delta=i64vec3(vec(p))+i64vec3(0,s[e+2],0)-i64vec3(point);
+                int64_t d=dot64(delta,delta);
+                if (d<distance || (d==distance && p<best)) { distance=d; best=p; settled=s[e+2]; }
+            }
+        }
+    }
+    return ivec2(best,settled);
+}
+void contact(int m, int p, int anchorDy, ivec3 point, int bits, int forcedFace) {
+    i64vec3 delta=i64vec3(point)-i64vec3(vec(p))-i64vec3(0,anchorDy,0);
+    int face=forcedFace>=0?forcedFace/2:0;
+    int64_t best=int64_t(-1), bestLength=int64_t(1);
+    for (int i=0; forcedFace<0 && i<3; i++) {
+        i64vec3 e=i64vec3(vec(p+3+i*3));
+        int64_t len=dot64(e,e), projection=(bits&8)==0?e.y:dot64(delta,e);
+        int64_t value=(bits&8)==0?projection*projection:abs(projection);
+        if (value*bestLength>best*len) { face=i; best=value; bestLength=max(int64_t(1),len); }
+    }
+    i64vec3 edge=i64vec3(vec(p+3+face*3));
+    int64_t side=(bits&8)==0?edge.y:dot64(delta,edge);
+    int sign=forcedFace>=0?(forcedFace%2==1?-1:1):side<0?-1:1;
+    i64vec3 normal=edge*sign;
+    ivec3 target=vec(p)+ivec3(0,anchorDy,0)+ivec3(normal);
+    for (int i=0; i<3; i++) if (i!=face) {
+        i64vec3 e=i64vec3(vec(p+3+i*3));
+        int64_t len=max(int64_t(1),dot64(e,e)), projection=dot64(delta,e);
+        projection=clamp(projection,-len*9/10,len*9/10);
+        if ((bits&16)==0) projection/=4;
+        target+=ivec3(e*projection/len);
+    }
+    int64_t minimum=int64_t(0x7ffffffffffffffful);
+    for (int i=0; i<a[m+1]; i++) {
+        int b=box(a[m]+i);
+        int64_t projection=dot64(i64vec3(vec(b))-i64vec3(vec(m+8)),normal);
+        for (int e=b+3; e<b+12; e+=3) projection-=abs(dot64(i64vec3(vec(e)),normal));
+        minimum=min(minimum,projection);
+    }
+    int64_t gap=8*max(abs(normal.x),max(abs(normal.y),abs(normal.z)))-minimum;
+    int64_t len=max(int64_t(1),dot64(normal,normal));
+    moveCandidate(m,target+ivec3(normal*gap/len));
+}
+void evaluate(int id) {
+    int m=a[10]+id*12;
+    if (a[m+3]!=phase) return;
+    int target=s[14]+id*2;
+    s[target]=0; s[target+1]=0;
+    if (s[s[15]+id]!=0 || s[s[13]+a[m+2]]>=72 || s[s[16]+phase]>=a[a[15]+phase]
+            || (phase==0 && a[m+6]!=3)) return;
+    bool contacted=false;
+    if (phase!=0) {
+        int bits=int(hashBits(uint(a[m+11])+uint(roundIndex)*0x9e3779b9u));
+        int owner=a[m+2], first=(bits&0x7fffffff)%125, smp=-1;
+        for (int i=0; i<125; i++) {
+            int q=(first+i)%125;
+            if ((s[s[11]+owner*4+q/32]&(1<<(q%32)))==0) { smp=q; break; }
+        }
+        if (smp<0) return;
+        ivec3 point=vec(a[17]+owner*375+smp*3);
+        ivec2 anchor=a[m+7]>=0?ivec2(box(a[m+7]>>3),0):(bits&3)!=0?closest(point):ivec2(-1,0);
+        if (anchor.x>=0) contact(m,anchor.x,anchor.y,point,bits,a[m+7]>=0?a[m+7]&7:-1);
+        else moveCandidate(m,point);
+        if (!valid(a[m],a[m+1],0,false)) {
+            if (anchor.x<0) return;
+            moveCandidate(m,point);
+            if (!valid(a[m],a[m+1],0,false)) return;
+        }
+        else contacted=anchor.x>=0;
+    } else if (!valid(a[m],a[m+1],0,false)) return;
+    int dy=phase==0?0:settle(a[m],a[m+1]);
+    if (phase==0 && !valid(a[m+5],a[m+6],dy,true)) return;
+    if (cell(floorQ(vec(m+8)+ivec3(0,dy,0)))==1) return;
+    int added=cover(a[m],a[m+1],dy,false);
+    if (added==0) return;
+    int deficit=max(0,44-s[s[12]+a[m+2]]);
+    s[target]=added*a[m+4]+deficit*8+(contacted || dy<0?640:0);
+    s[target+1]=dy;
+}
+#endif
+#if !defined(BARRICADE_STAGE) || BARRICADE_STAGE == 1
+bool conflicts(int left, int right) {
+    int lm=a[10]+left*12, rm=a[10]+right*12;
+    int leftDy=s[s[14]+left*2+1], rightDy=s[s[14]+right*2+1];
+    for (int i=0; i<a[lm+1]; i++) {
+        int lp=box(a[lm]+i);
+        for (int j=0; j<a[rm+1]; j++)
+            if (intersects(lp,leftDy,box(a[rm]+j),rightDy,-5)) return true;
+        if (phase==0) for (int j=0; j<a[rm+6]; j++)
+            if (intersects(lp,leftDy,box(a[rm+5]+j),rightDy,3)) return true;
+    }
+    if (phase==0) for (int i=0; i<a[lm+6]; i++) for (int j=0; j<a[rm+1]; j++)
+        if (intersects(box(a[lm+5]+i),leftDy,box(a[rm]+j),rightDy,3)) return true;
+    return false;
+}
+bool precedes(int left, int leftOwner, int right, int rightOwner) {
+    int leftScore=s[s[14]+left*2], rightScore=s[s[14]+right*2];
+    if (leftScore!=rightScore) return leftScore>rightScore;
+    int offset=(roundIndex*17)%a[7];
+    return (leftOwner-offset+a[7])%a[7] < (rightOwner-offset+a[7])%a[7];
+}
+void propose(int owner) {
+    s[s[17]+owner]=-1;
+    s[s[18]+owner]=0;
+    if (s[3]!=0 || s[s[16]+phase]>=a[a[15]+phase]
+            || s[s[13]+owner]>=72 || (s[4]>=a[7]*80 && s[s[12]+owner]>=44)) return;
+    int r=a[16]+(phase*a[7]+owner)*2;
+    for (int retry=0; retry<8; retry++) {
+        int score=0, best=-1;
+        for (int id=a[r]; id<a[r+1]; id++)
+            if (s[s[14]+id*2]>score) { best=id; score=s[s[14]+id*2]; }
+        if (best<0) return;
+        int m=a[10]+best*12, dy=s[s[14]+best*2+1];
+        bool blockedNow=false;
+        for (int i=0; i<a[m+1]; i++) if (blocked(a[m]+i,dy,false)) { blockedNow=true; break; }
+        if (!blockedNow && (phase!=0 || valid(a[m+5],a[m+6],dy,true))
+                && cover(a[m],a[m+1],dy,false)>0) {
+            s[s[17]+owner]=best;
+            return;
+        }
+        s[s[14]+best*2]=0;
+    }
+}
+void screen(int owner) {
+    if (owner==0) { s[s[20]]=s[4]; s[s[22]]=s[s[16]+phase]; }
+    s[s[21]+owner]=s[s[12]+owner];
+    int candidate=s[s[17]+owner];
+    if (candidate<0) { s[s[18]+owner]=0; return; }
+    int m=a[10]+candidate*12;
+    int added=cover(a[m],a[m+1],s[s[14]+candidate*2+1],false);
+    s[s[19]+candidate]=added;
+    if (added==0) { s[s[18]+owner]=0; return; }
+    s[s[18]+owner]=1;
+    for (int other=0; other<a[7]; other++) {
+        if (other==owner) continue;
+        int challenger=s[s[17]+other];
+        if (challenger>=0 && precedes(challenger,other,candidate,owner)
+                && conflicts(candidate,challenger)) {
+            s[s[18]+owner]=0;
+            return;
+        }
+    }
+}
+void applyOwner(int owner) {
+    if (s[3]!=0 || s[s[18]+owner]==0 || s[s[13]+owner]>=72) return;
+    int offset=(roundIndex*17)%a[7], order=(owner-offset+a[7])%a[7];
+    // Count earlier winners as if applied serially, preserving quota and fill-cap behavior.
+    int quota=max(0,a[a[15]+phase]-s[s[22]]), preceding=0, projected=s[s[20]];
+    for (int k=0; k<order; k++) {
+        int previous=(k+offset)%a[7];
+        if (s[s[18]+previous]==0 || preceding>=quota) continue;
+        if (projected>=a[7]*80 && s[s[21]+previous]>=44) continue;
+        int previousCandidate=s[s[17]+previous];
+        if (previousCandidate<0) continue;
+        int added=s[s[19]+previousCandidate];
+        if (added<=0) continue;
+        preceding++; projected+=added;
+    }
+    if (preceding>=quota || (projected>=a[7]*80 && s[s[21]+owner]>=44)) return;
+    int best=s[s[17]+owner], m=a[10]+best*12, dy=s[s[14]+best*2+1];
+    if (s[s[19]+best]<=0) return;
+    int phaseOffset=0;
+    for (int p=0; p<phase; p++) phaseOffset+=(p<3?2:p==3?8:12)*a[7];
+    int result=s[5]+(phaseOffset+roundIndex*a[7]+order)*4;
+    s[result]=best; s[result+1]=a[m+8]; s[result+2]=a[m+9]+dy; s[result+3]=a[m+10];
+    s[s[15]+best]=roundIndex+1; s[s[13]+owner]++;
+    atomicAdd(s[0],1); atomicAdd(s[s[16]+phase],1);
+    appendEntry(a[m],a[m+1],dy,0);
+    if (phase==0) appendEntry(a[m+5],a[m+6],dy,1);
+    cover(a[m],a[m+1],dy,true);
+}
+#endif
+void main() {
+#if defined(BARRICADE_STAGE) && BARRICADE_STAGE == 0
+    if (stage==0) { int id=batchBase+int(gl_GlobalInvocationID.x); if (id<a[11]) evaluate(id); }
+#elif defined(BARRICADE_STAGE) && BARRICADE_STAGE == 1
+    if (stage==1) { int owner=batchBase+int(gl_GlobalInvocationID.x); if (owner<a[7]) propose(owner); }
+    else if (stage==2) { int owner=batchBase+int(gl_GlobalInvocationID.x); if (owner<a[7]) screen(owner); }
+    else if (stage==3) { int owner=batchBase+int(gl_GlobalInvocationID.x); if (owner<a[7]) applyOwner(owner); }
+#else
+    if (stage==0) { int id=batchBase+int(gl_GlobalInvocationID.x); if (id<a[11]) evaluate(id); }
+    else if (stage==1) { int owner=batchBase+int(gl_GlobalInvocationID.x); if (owner<a[7]) propose(owner); }
+    else if (stage==2) { int owner=batchBase+int(gl_GlobalInvocationID.x); if (owner<a[7]) screen(owner); }
+    else if (stage==3) { int owner=batchBase+int(gl_GlobalInvocationID.x); if (owner<a[7]) applyOwner(owner); }
+#endif
+}
+#else
+void main() { }
+#endif

@@ -1,0 +1,10 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": ["PPP", "CSC", "PPP"],
+  "key": {
+    "P": {"tag": "minecraft:planks"},
+    "C": {"item": "minecraft:cobblestone"},
+    "S": {"item": "minecraft:stick"}
+  },
+  "result": {"item": "barricade:barricade", "count": 4}
+}
