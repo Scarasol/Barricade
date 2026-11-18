@@ -13,6 +13,7 @@ import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.AABB;
 import net.minecraftforge.client.event.RenderLevelStageEvent;
 import org.joml.Vector3f;
@@ -46,10 +47,62 @@ public final class BarricadeRenderer {
         PileModel model;
         PilePiece piece;
         StaticMesh mesh;
+        final EmbeddedBuffers buffers = new EmbeddedBuffers();
+        AABB renderBounds;
+        boolean live;
+        long renderedFrame = -1;
         boolean attempted;
         EmbeddedView(EmbeddedBlock identity) { this.identity = identity; }
     }
     private BarricadeRenderer() { }
+    private static long frameNumber;
+
+    static void frameStarted() {
+        frameNumber++;
+    }
+
+    public static AABB embeddedRenderBounds(BlockEntity entity) {
+        EmbeddedView view = EMBEDDED.get(entity.getBlockPos());
+        return view != null && view.live && SUPPRESSED.contains(entity.getBlockPos()) ? view.renderBounds : null;
+    }
+
+    /** Called instead of suppressing the real BER; its original entity and animation state stay alive. */
+    public static boolean renderEmbeddedEntity(BlockEntity entity, float partialTick, PoseStack pose,
+                                               MultiBufferSource buffers) {
+        EmbeddedView view = EMBEDDED.get(entity.getBlockPos());
+        if (view == null || !view.live || !SUPPRESSED.contains(entity.getBlockPos())) return false;
+        if (view.renderedFrame == frameNumber) return true;
+        var minecraft = Minecraft.getInstance();
+        var renderer = minecraft.getBlockEntityRenderDispatcher().getRenderer(entity);
+        if (renderer == null || entity.isRemoved() || !entity.hasLevel()
+                || !entity.getType().isValid(entity.getBlockState())) return true;
+        if (!renderer.shouldRender(entity, minecraft.gameRenderer.getMainCamera().getPosition())) return true;
+        view.renderedFrame = frameNumber;
+        view.buffers.begin(entity.getLevel(), entity.getLevel()::hasChunkAt, entity.getBlockPos(), pose.last(), buffers);
+        drawEmbeddedEntity(renderer, entity, partialTick, view.piece, pose, view.buffers);
+        return true;
+    }
+
+    static <T extends BlockEntity> void drawEmbeddedEntity(
+            net.minecraft.client.renderer.blockentity.BlockEntityRenderer<T> renderer,
+            T entity, float partialTick, PilePiece piece, PoseStack pose, MultiBufferSource buffers) {
+        pose.pushPose();
+        try {
+            applyEmbeddedPose(pose, piece);
+            CaptureBuffers.live(buffers, () -> renderer.render(entity, partialTick, pose, buffers,
+                    0, net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY));
+        } finally {
+            pose.popPose();
+        }
+    }
+
+    static void applyEmbeddedPose(PoseStack pose, PilePiece piece) {
+        pose.translate(piece.x(), piece.y(), piece.z());
+        pose.mulPose(piece.rotation());
+        pose.scale(piece.model().sizeX() * piece.scale(), piece.model().sizeY() * piece.scale(),
+                piece.model().sizeZ() * piece.scale());
+        pose.translate(-piece.model().pivotX(), -piece.model().pivotY(), -piece.model().pivotZ());
+    }
     static void replace(UUID region, List<FieldObject> pieces) {
         Set<FieldObject.Key> previous = REGIONS.getOrDefault(region, Set.of()), next = new HashSet<>();
         for (FieldObject object : pieces) {
@@ -113,16 +166,13 @@ public final class BarricadeRenderer {
     public static void invalidateEmbedded(BlockPos pos) {
         EmbeddedView view = EMBEDDED.get(pos);
         if (view == null) return;
-        view.model = null;
-        view.piece = null;
-        view.mesh = null;
+        // A data packet updates the real BE in place; keep its live drawing until static refresh completes.
         view.attempted = false;
-        EMBEDDED_INDEX.put(view, new AABB(pos));
-        if (SUPPRESSED.remove(pos)) rebuildOriginal(pos);
     }
     static void clear() {
         List.copyOf(SUPPRESSED).forEach(BarricadeRenderer::removeEmbedded);
         REGIONS.clear(); OBJECTS.clear(); EMBEDDED_REGIONS.clear(); EMBEDDED.clear();
+        EmbeddedBuffers.clearGeometry();
         INDEX.clear(); UNCAPTURED.clear(); EMBEDDED_INDEX.clear(); frame = List.of();
     }
     static void invalidateBounds() {
@@ -137,10 +187,12 @@ public final class BarricadeRenderer {
             view.piece = null;
             view.mesh = null;
             view.attempted = false;
+            view.live = false;
             if (SUPPRESSED.remove(view.identity.pos())) rebuildOriginal(view.identity.pos());
             EMBEDDED_INDEX.put(view, new AABB(view.identity.pos()));
         }
         RenderPasses.clear();
+        EmbeddedBuffers.clearGeometry();
     }
     static String stats() {
         return "objects=" + OBJECTS.size() + ", drawn_batches=" + drawn;
@@ -234,14 +286,20 @@ public final class BarricadeRenderer {
                         view.model = model;
                         view.mesh = mesh;
                         view.piece = view.identity.transform(model);
-                        EMBEDDED_INDEX.put(view, transformed(view, mesh.bounds));
+                        var entity = level.getBlockEntity(pos);
+                        view.live = entity != null && Minecraft.getInstance().getBlockEntityRenderDispatcher()
+                                .getRenderer(entity) != null;
+                        // Dynamic frustum bounds use the supported capture envelope, never the coverage mask.
+                        view.renderBounds = transformed(view, view.live
+                                ? new AABB(-16, -16, -16, 16, 16, 16) : mesh.bounds);
+                        EMBEDDED_INDEX.put(view, view.renderBounds);
                         if (SUPPRESSED.add(pos)) rebuildOriginal(pos);
                     }
                 } catch (RuntimeException | LinkageError exception) {
                     Barricade.LOGGER.warn("Cannot capture embedded appearance at {}: {}", pos, exception.toString());
                 }
             }
-            if (view.mesh == null || view.piece == null || !event.getFrustum().isVisible(transformed(view, view.mesh.bounds)))
+            if (view.mesh == null || view.piece == null || !event.getFrustum().isVisible(view.renderBounds))
                 continue;
             pose.pushPose();
             pose.translate(pos.getX() - camera.x + view.piece.x(), pos.getY() - camera.y + view.piece.y(),
@@ -250,7 +308,7 @@ public final class BarricadeRenderer {
             pose.scale(view.model.sizeX() * view.piece.scale(), view.model.sizeY() * view.piece.scale(),
                     view.model.sizeZ() * view.piece.scale());
             pose.translate(-view.model.pivotX(), -view.model.pivotY(), -view.model.pivotZ());
-            for (StaticMesh.Batch batch : view.mesh.surfaces()) {
+            for (StaticMesh.Batch batch : view.live ? view.mesh.bakedSurfaces() : view.mesh.surfaces()) {
                 if (RenderPasses.transparent(batch.material) != transparent) continue;
                 int light = SurfaceLight.sample(level, pos, view.piece, batch);
                 RenderType type = transparent ? RenderPasses.particles(batch.material) : batch.material;
@@ -259,6 +317,12 @@ public final class BarricadeRenderer {
                 drawn++;
             }
             pose.popPose();
+            if (view.live && view.renderedFrame == frameNumber) {
+                view.buffers.draw(transparent, type -> {
+                    used.add(type);
+                    return buffers.getBuffer(type);
+                });
+            }
         }
     }
 

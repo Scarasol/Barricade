@@ -155,6 +155,69 @@ class AcceleratedRenderingGpuTest {
         }
     }
 
+    @Test
+    void animatedInstancesReuseOneMeshWithDistinctPoseTintLightAndOverlayOnTheGpu() throws Exception {
+        try (var environment = new Environment()) {
+            var buffers = new AcceleratedRingBuffers.Buffers(environment);
+            StaticMesh.Acceleration acceleration = null;
+            try {
+                RenderType material = RenderType.entityCutout(new ResourceLocation("barricade", "animated-test.png"));
+                var builder = new AcceleratedBufferBuilder(buffers.getVertexBuffer(), buffers.getVaryingBuffer(),
+                        buffers.getElementSegment(), buffers, null, new LayerKey(0, material));
+                List<StaticMesh.Vertex> vertices = new ArrayList<>();
+                for (int index = 0; index < 4; index++)
+                    vertices.add(new StaticMesh.Vertex(index, .5f, 0, 255, 255, 255, 255,
+                            .125f * index, .625f, 0, 0, 0, 1, 0));
+                acceleration = AcceleratedRenderingBridge.create(
+                        new StaticMesh.Batch(material, vertices, new Vector3f()), builder);
+                assertNotNull(acceleration);
+                int[] colors = {0x7F4080FF, 0xC0FF2040}, lights = {64 | 208 << 16, 112 | 144 << 16};
+                int[] overlays = {3 | 7 << 16, 11 | 4 << 16};
+                for (int instance = 0; instance < 2; instance++) {
+                    var pose = new PoseStack();
+                    pose.translate(instance * 4, instance, -2);
+                    pose.mulPose(new Quaternionf().rotationX((float) Math.PI / 2));
+                    assertTrue(acceleration.draw(builder, pose.last(), lights[instance],
+                            colors[instance], overlays[instance]));
+                }
+                assertEquals(1, builder.getMeshUploaders().size());
+                environment.uploads.dispatch(List.of(builder), buffers);
+                environment.transforms.dispatch(List.of(builder));
+                glMemoryBarrier(GL_ALL_BARRIER_BITS);
+                glFinish();
+                assertEquals(GL_NO_ERROR, glGetError());
+                buffers.bindTransformBuffers();
+                int output = glGetIntegeri(GL_SHADER_STORAGE_BUFFER_BINDING, 1), stride = environment.getVertexSize();
+                var bytes = MemoryUtil.memAlloc(stride * 8).order(ByteOrder.nativeOrder());
+                try {
+                    glGetNamedBufferSubData(output, builder.getVertexCountOffset() * stride, bytes);
+                    for (int vertex = 0; vertex < 8; vertex++) {
+                        int offset = vertex * stride, instance = Math.round(bytes.getFloat(offset + 4));
+                        assertTrue(instance == 0 || instance == 1);
+                        int index = Math.round(bytes.getFloat(offset)) - instance * 4;
+                        assertTrue(index >= 0 && index < 4);
+                        assertEquals(-1.5f, bytes.getFloat(offset + 8), .000001f);
+                        int color = colors[instance];
+                        assertEquals(color >>> 16 & 255, bytes.get(offset + 12) & 255);
+                        assertEquals(color >>> 8 & 255, bytes.get(offset + 13) & 255);
+                        assertEquals(color & 255, bytes.get(offset + 14) & 255);
+                        assertEquals(color >>> 24, bytes.get(offset + 15) & 255);
+                        assertEquals(.125f * index, bytes.getFloat(offset + 16));
+                        assertEquals(overlays[instance], bytes.getInt(offset + 24));
+                        assertEquals(lights[instance], bytes.getInt(offset + 28));
+                        assertEquals(0, bytes.get(offset + 32));
+                        assertEquals(0, bytes.get(offset + 33));
+                        assertEquals(127, bytes.get(offset + 34));
+                    }
+                } finally { MemoryUtil.memFree(bytes); }
+            } finally {
+                glFinish();
+                buffers.delete();
+                if (acceleration != null) acceleration.close();
+            }
+        }
+    }
+
     private static void runUploads(int instances, boolean mixed) throws Exception {
         try (var environment = new Environment()) {
             var buffers = new AcceleratedRingBuffers.Buffers(environment);

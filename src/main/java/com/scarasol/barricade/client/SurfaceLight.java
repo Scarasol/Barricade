@@ -39,6 +39,10 @@ final class SurfaceLight {
         Vector3f normal = new Vector3f(localNormal).div(
                 piece.model().sizeX(), piece.model().sizeY(), piece.model().sizeZ());
         piece.rotation().transform(normal);
+        return position(owner, point, normal, solid);
+    }
+
+    static BlockPos position(BlockPos owner, Vector3f point, Vector3f normal, Predicate<BlockPos> solid) {
         if (normal.lengthSquared() > 0.000001f) {
             normal.normalize();
             point.fma(EPSILON, normal);

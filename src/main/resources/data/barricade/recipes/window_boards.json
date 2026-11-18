@@ -1,7 +1,7 @@
 {
   "type": "minecraft:crafting_shaped",
   "category": "building",
-  "pattern": ["PPP", " N "],
+  "pattern": ["PPP", "N N"],
   "key": {
     "P": { "tag": "minecraft:planks" },
     "N": { "item": "minecraft:iron_nugget" }

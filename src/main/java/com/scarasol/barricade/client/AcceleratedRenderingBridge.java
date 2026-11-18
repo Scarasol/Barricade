@@ -102,12 +102,17 @@ final class AcceleratedRenderingBridge {
         }
 
         @Override public boolean draw(VertexConsumer out, PoseStack.Pose pose, int worldLight) {
+            return draw(out, pose, worldLight, -1, -1);
+        }
+
+        @Override public boolean draw(VertexConsumer out, PoseStack.Pose pose, int worldLight,
+                                      int color, int worldOverlay) {
             if (disabled || closed) return false;
             drawn = false;
             try {
                 if (!(out instanceof IAcceleratedVertexConsumer target) || !target.isAccelerated()) return false;
-                target.doRender(this, null, pose.pose(), pose.normal(), -1,
-                        StaticMesh.mergeLight(light, worldLight), overlay);
+                target.doRender(this, null, pose.pose(), pose.normal(), color,
+                        StaticMesh.mergeLight(light, worldLight), worldOverlay == -1 ? overlay : worldOverlay);
                 return drawn;
             } catch (RuntimeException exception) {
                 disabled = true;

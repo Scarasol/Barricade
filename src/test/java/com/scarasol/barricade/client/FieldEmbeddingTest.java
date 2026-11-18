@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.phys.AABB;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 import org.junit.jupiter.api.Test;
@@ -39,6 +40,50 @@ class FieldEmbeddingTest {
         assertTrue(overlay.advance(new TerrainShapes(memory, ignored -> true, meshes),
                 Integer.MAX_VALUE, Long.MAX_VALUE));
         return overlay.visible();
+    }
+
+    @Test void aLargeSingleBlockEmbeddingFiltersOtherRegionsAndRemovalRestoresTheSameObjects() {
+        BlockPos pos = new BlockPos(-17, -60, -1);
+        var memory = MemoryFixture.create(false);
+        memory.context(Map.of(pos, Blocks.FURNACE.defaultBlockState()), Map.of());
+        var embedded = new EmbeddedBlock(pos, 7, 1);
+        var model = embedded.model(memory);
+        assertEquals(1, model.parts().size());
+        var visual = embedded.transform(model);
+        var center = visual.transformPoint(.5f, 6.5f, .5f);
+        var clearCenter = visual.transformPoint(2, 6.5f, .5f);
+        BlockPos owner = BlockPos.containing(pos.getX() + (double) center.x,
+                pos.getY() + (double) center.y, pos.getZ() + (double) center.z);
+        var inside = object(pos, owner, 0, cube(.1f), center, visual.rotation());
+        var clear = object(pos, owner, 1, cube(.1f), clearCenter, visual.rotation());
+        Set<BlockPos> domain = new HashSet<>(FieldVisibility.cells(inside));
+        domain.addAll(FieldVisibility.cells(clear));
+        assertFalse(domain.contains(pos), "The source and embedded host must be separate regions");
+        var source = region(1, domain, Map.of());
+        var host = region(2, Set.of(pos), Map.of(pos, embedded));
+        var base = List.of(inside, clear);
+        try (var mesh = VisualMeshFixture.box(new AABB(0, 0, 0, 1, 8, 1))) {
+            AtomicInteger captures = new AtomicInteger();
+            var terrain = new TerrainShapes(memory, ignored -> true, ignored -> {
+                captures.incrementAndGet();
+                return mesh;
+            });
+            var during = new FieldOverlay(source, 1, base, List.of(source, host));
+            assertTrue(during.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
+            assertEquals(List.of(clear), during.visible());
+            var alone = new FieldOverlay(source, 1, List.of(inside), List.of(source, host));
+            assertTrue(alone.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
+            assertEquals(List.of(inside), alone.visible(), "Existing nonempty fallback still applies");
+            var restored = new FieldOverlay(source, 2, base, List.of(source, region(2, Set.of(pos), Map.of())));
+            assertTrue(restored.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
+            assertEquals(base, restored.visible());
+            assertSame(inside, restored.visible().get(0));
+            assertSame(clear, restored.visible().get(1));
+            assertTrue(source.mask().isEmpty());
+            assertTrue(host.mask().isEmpty());
+            assertEquals(1, captures.get());
+            assertEquals(0, memory.chunkRequests());
+        }
     }
 
     @Test void wholeEmbeddedEnvelopeIncludesTheSpaceBetweenLegsAndOnlyFallsBackWithoutAnAlternative() {

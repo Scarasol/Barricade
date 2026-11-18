@@ -102,6 +102,27 @@ class SpatialFieldPoseTest {
         }
         assertTrue(plan.guards(plan.initial).isEmpty(), "Rejected declarations must not become ghost obstacles");
     }
+    @Test void candidateGeometryMatchesItsPosesAcrossBufferSegments() {
+        Set<GridPos> domain = new HashSet<>();
+        for (int x = 0; x < 2; x++) for (int y = 0; y < 3; y++) for (int z = 0; z < 2; z++)
+            domain.add(new GridPos(x, y, z));
+        List<PileModel> models = new ArrayList<>(MODELS);
+        models.add(new PileModel("compound16", "minecraft:stone", .4f, .3f, .4f, 1,
+                Collections.nCopies(16, CollisionBox.CUBE)));
+        PackingBatch plan = PackingBatch.prepare(new PackingInput(137, 0, domain, models, List.of(),
+                List.of(OrientedBox.axisAligned(0, -1, 0, 2, 0, 2)), 3, true));
+        assertTrue(plan.size > 1000);
+        for (int id = 0; id < plan.size; id++) {
+            RegionPiece candidate = plan.candidates.get(id);
+            int m = plan.input[10] + id * PackingBatch.META;
+            int[] expected = new int[plan.input[m + 1] * PackingBatch.BOX];
+            GridPos owner = candidate.owner();
+            candidate.piece().encodeColliders(expected, 0, owner.x(), owner.y(), owner.z());
+            int start = plan.input[12] + plan.input[m] * PackingBatch.BOX;
+            assertArrayEquals(expected, Arrays.copyOfRange(plan.input, start, start + expected.length),
+                    "Encoded body for candidate " + id);
+        }
+    }
     @Test void boundedInitialCoverageMatchesEveryUnboundedProbeForCompoundBodiesAndGuards() {
         Set<GridPos> domain = new HashSet<>();
         for (int x = 0; x < 2; x++) for (int y = 0; y < 2; y++) for (int z = 0; z < 2; z++)
@@ -144,7 +165,7 @@ class SpatialFieldPoseTest {
             assertEquals(total, s[4]);
         }
     }
-    @Test void closedRegionProjectionSeatsWholeBodiesOnWallsAndRejectsOversizedModels() {
+    @Test void closedRegionProjectionSeatsWholeBodiesOnWallsAndRetainsOversizedModelsWithoutShrinking() {
         assertTrue(FieldRules.FINGERPRINT.contains(":trials=" + String.join(",",
                 Arrays.stream(PackingBatch.TRIALS).mapToObj(Integer::toString).toList())));
         assertTrue(FieldRules.FINGERPRINT.contains(":rounds=" + String.join(",",
@@ -174,7 +195,12 @@ class SpatialFieldPoseTest {
                 List.of(new CollisionBox(0, 0, 0, 2, 2, 2)));
         PackingBatch oversized = PackingBatch.prepare(new PackingInput(19, 0, domain, List.of(large),
                 List.of(), List.of(), 2, true));
-        assertTrue(oversized.decode(FieldOracle.solve(oversized)).isEmpty(), "An infeasible model must not be shrunk or cropped");
+        int[] state = FieldOracle.solve(oversized);
+        var retained = oversized.decode(state);
+        assertEquals(1, retained.size(), "An infeasible region still needs its highest-ranked whole model");
+        assertTrue(state[24] > 0);
+        assertSame(large, retained.get(0).piece().model());
+        assertTrue(retained.get(0).piece().scale() >= .95f && retained.get(0).piece().scale() <= 1.05f);
     }
     @Test void logicalExteriorAllowsLimitedSideAndTopOverhangButKeepsItsSupportFloor() {
         GridPos cell = new GridPos(1, 1, 1);

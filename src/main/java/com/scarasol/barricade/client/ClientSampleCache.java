@@ -18,7 +18,7 @@ final class ClientSampleCache {
 
     static void initialize() {
         if (loading != null) return;
-        StringBuilder code = new StringBuilder("whole-visible-bounds-sampler\n");
+        StringBuilder code = new StringBuilder("native-quad-visible-bounds-sampler\n");
         ModList.get().getMods().stream().sorted(Comparator.comparing(mod -> mod.getModId())).forEach(mod -> {
             code.append(mod.getModId()).append('=').append(mod.getVersion()).append('\n');
             var path = mod.getOwningFile().getFile().getFilePath();

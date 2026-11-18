@@ -6,7 +6,7 @@
   "refmap": "barricade.refmap.json",
   "plugin": "com.scarasol.barricade.mixin.plugin.MixinPlugin",
   "mixins": ["BlockItemSamplingMixin", "EmbeddedStateMixin", "WindowBoardsArrowMixin"],
-  "client": ["CompositeTypeAccess", "CompositeStateAccess", "RenderTypeAccess", "EmbeddedRenderMixin", "EmbeddedFaceMixin", "EmbeddedBlockEntityRenderMixin", "EmbeddedBlockEntityUpdateMixin", "WindowBoardsClientLevelMixin", "WindowBoardsClientChunksMixin", "WindowBoardsAttackMixin", "bettercombat.WindowBoardsBetterCombatAttackMixin", "bettercombat.WindowBoardsRadialFilterMixin"],
+  "client": ["CompositeTypeAccess", "CompositeStateAccess", "RenderTypeAccess", "EmbeddedRenderMixin", "EmbeddedFaceMixin", "EmbeddedBlockEntityRenderMixin", "EmbeddedBlockEntityBoundsMixin", "EmbeddedBlockEntityUpdateMixin", "WindowBoardsClientLevelMixin", "WindowBoardsClientChunksMixin", "WindowBoardsAttackMixin", "bettercombat.WindowBoardsBetterCombatAttackMixin", "bettercombat.WindowBoardsRadialFilterMixin", "tacz.CaptureBufferMixin", "sbm.CaptureCullingMixin"],
   "injectors": {
     "defaultRequire": 1
   }

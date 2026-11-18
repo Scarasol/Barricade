@@ -151,8 +151,7 @@ class SpatialFieldGpuTest {
             assertArrayEquals(plan.compactResult(reference), selected, "Complete compact result including guards and owner coverage");
             var expected = plan.decode(reference);
             var separate = plan.decode(selected);
-            if (plans.get(i) == guarded) assertTrue(separate.isEmpty(), "Bodies must respect external skeleton corridors");
-            else assertFalse(separate.isEmpty(), "Region " + i + " must retain valid active-center candidates");
+            assertFalse(separate.isEmpty(), "Region " + i + " must retain a candidate even when all corridors are blocked");
             assertPoses(expected, separate, "oracle, region " + i);
             assertPoses(separate, plans.get(i).decode(combined.get(i)), "group isolation, region " + i);
         }
@@ -162,6 +161,152 @@ class SpatialFieldGpuTest {
         for (int i = 0; i < plans.size(); i++)
             assertPoses(plans.get(i).decode(combined.get(i)),
                     plans.get(i).decode(output.get(plans.size() - 1 - i)), "reversed buffer ranges " + i);
+        assertFalse(worker.failed());
+    }
+    @Test void mixedRegionPhasesSkipEmptyDispatchesWithoutChangingResults() {
+        List<PileModel> pool = List.of(
+                new PileModel("panel", "minecraft:oak_door", .2f, 1, 1, 1,
+                        List.of(new CollisionBox(0, 0, 0, 1, 2, 1))),
+                new PileModel("bulk", "minecraft:stone", 1, 1, 1, 1, List.of(CollisionBox.CUBE)),
+                new PileModel("filler", "minecraft:stone", .4f, .4f, .4f, 1, List.of(CollisionBox.CUBE)));
+        List<PackingBatch> plans = new ArrayList<>();
+        for (PileModel model : pool)
+            plans.add(PackingBatch.prepare(new PackingInput(42, 0, Set.of(new GridPos(0, 0, 0)),
+                    List.of(model), List.of(), List.of(), 3, true)));
+        for (int count : new int[]{64, 65}) {
+            Set<GridPos> cells = new HashSet<>();
+            for (int i = 0; i < count; i++) cells.add(new GridPos(i % 5, i / 25, i / 5 % 5));
+            plans.add(PackingBatch.prepare(new PackingInput(42, 0, cells,
+                    List.of(pool.get(2)), List.of(), List.of(), 5, true)));
+        }
+        long expectedDispatches = 0;
+        boolean skippedPhase = false;
+        for (PackingBatch plan : plans) {
+            for (int phase = 0; phase < PackingBatch.ROUNDS.length; phase++) {
+                int first = plan.input[plan.input[16] + phase * plan.input[7] * 2];
+                int last = plan.input[plan.input[16] + (phase + 1) * plan.input[7] * 2 - 1];
+                if (first == last) skippedPhase = true;
+                else expectedDispatches += ((last - first + 16_383) / 16_384 + 3) * PackingBatch.ROUNDS[phase];
+            }
+            if (plan.input[21] != 0) expectedDispatches += (plan.size + 16_383) / 16_384 + 2;
+        }
+        assertTrue(skippedPhase);
+        PackingGroup group = new PackingGroup(plans);
+        long dispatches = worker.dispatches();
+        var combined = group.split(gpu(group));
+        assertEquals(expectedDispatches, worker.dispatches() - dispatches,
+                "Only nonempty plan phases may submit evaluate/propose/screen/apply work");
+        for (int i = 0; i < plans.size(); i++) {
+            PackingBatch plan = plans.get(i);
+            int[] expected = plan.compactResult(FieldOracle.solve(plan));
+            assertArrayEquals(expected, combined.get(i), "Mixed phases, plan " + i);
+            assertArrayEquals(expected, gpu(plan), "Separate job, plan " + i);
+        }
+        Collections.reverse(plans);
+        var reversed = new PackingGroup(plans);
+        var actual = reversed.split(gpu(reversed));
+        for (int i = 0; i < plans.size(); i++)
+            assertArrayEquals(combined.get(i), actual.get(plans.size() - 1 - i));
+        assertFalse(worker.failed());
+    }
+    @Test void rankedEmptyBatchesMatchTheOracleAndNeverVetoTheLastObject() {
+        GridPos cell = new GridPos(0, 0, 0);
+        PileModel large = new PileModel("large", "minecraft:stone", 1, 1, 1, 1,
+                List.of(new CollisionBox(-.75f, -.75f, -.75f, 1.75f, 1.75f, 1.75f)));
+        PileModel small = new PileModel("small", "minecraft:stone", .4f, .4f, .4f, 1, List.of(CollisionBox.CUBE));
+        List<PackingBatch> plans = new ArrayList<>();
+        plans.add(PackingBatch.prepare(new PackingInput(42, 0, Set.of(cell), List.of(large),
+                List.of(), List.of(), 3, true)));
+        plans.add(PackingBatch.prepare(new PackingInput(43, 0, Set.of(cell), List.of(small),
+                List.of(), List.of(), 3, true, Set.of(cell),
+                List.of(OrientedBox.axisAligned(-1, -1, -1, 2, 2, 2)))));
+        PackingBatch noCoverage = PackingBatch.prepare(new PackingInput(44, 0, Set.of(cell), List.of(large),
+                List.of(), List.of(), 3, true));
+        Arrays.fill(noCoverage.input, noCoverage.input[15], noCoverage.input[15] + 5, 0);
+        Arrays.fill(noCoverage.input, noCoverage.input[17], noCoverage.input[17] + 375, 100_000);
+        plans.add(noCoverage);
+        PileModel panel = new PileModel("panel", "minecraft:oak_door", .2f, 1, 1, 1,
+                List.of(new CollisionBox(0, 0, 0, 1, 2, 1)));
+        PackingBatch noCorridors = PackingBatch.prepare(new PackingInput(45, 0, Set.of(cell), List.of(panel),
+                List.of(), List.of(), 3, true));
+        for (int id = 0; id < noCorridors.size; id++)
+            noCorridors.input[noCorridors.input[10] + id * PackingBatch.META + 6] = 0;
+        plans.add(noCorridors);
+        PackingGroup group = new PackingGroup(plans);
+        var combined = group.split(gpu(group));
+        for (int i = 0; i < plans.size(); i++) {
+            PackingBatch plan = plans.get(i);
+            int[] expected = plan.compactResult(FieldOracle.solve(plan));
+            assertEquals(1, expected[0]);
+            assertTrue(expected[24] > 0);
+            assertArrayEquals(expected, gpu(plan));
+            assertArrayEquals(expected, combined.get(i));
+            assertEquals(1, plan.decode(combined.get(i)).size());
+            assertTrue(plan.guards(combined.get(i)).isEmpty(), "Ranked panels must not reserve violated corridors");
+        }
+    }
+    @Test void perCellRankedResultsMatchTheOracleAcrossGroupsPreservedObjectsAndThinCoverage() {
+        PileModel small = new PileModel("small", "minecraft:stone", .4f, .4f, .4f, 1, List.of(CollisionBox.CUBE));
+        GridPos first = new GridPos(0, 0, 0);
+        Set<GridPos> row = Set.of(first, new GridPos(1, 0, 0), new GridPos(2, 0, 0));
+        List<PackingBatch> plans = new ArrayList<>();
+        RegionPiece kept = new RegionPiece(first, PilePiece.create(small, .5f, .5f, .5f,
+                1, new org.joml.Quaternionf()));
+        for (List<RegionPiece> preserved : List.of(List.<RegionPiece>of(), List.of(kept)))
+            plans.add(PackingBatch.prepare(new PackingInput(42, 0, row, List.of(small), preserved,
+                    List.of(OrientedBox.axisAligned(0, .8f, 0, 3, 1, 1)), 3, true, row,
+                    List.of(OrientedBox.axisAligned(-1, -1, -1, 4, 2, 2)))));
+        plans.get(0).input[22] = plans.get(0).initial[4] + 1;
+        plans.add(PackingBatch.prepare(new PackingInput(42, 0, row, List.of(small), List.of(),
+                List.of(OrientedBox.axisAligned(0, .6f, 0, 3, 1, 1)), 3, true, row,
+                List.of(OrientedBox.axisAligned(-1, -1, -1, 4, 2, 2)))));
+        Set<GridPos> separated = Set.of(first, new GridPos(2, 0, 0));
+        plans.add(PackingBatch.prepare(new PackingInput(42, 0, separated, List.of(small),
+                List.of(), List.of(), 3, true, separated,
+                List.of(OrientedBox.axisAligned(1.1f, -.5f, -.5f, 4, 1.5f, 1.5f)))));
+        PileModel panel = new PileModel("panel", "minecraft:oak_door", .2f, 1, 1, 1,
+                List.of(new CollisionBox(0, 0, 0, 1, 2, 1)));
+        PackingBatch noCorridors = PackingBatch.prepare(new PackingInput(42, 0, row, List.of(panel),
+                List.of(), List.of(), 3, true));
+        for (int id = 0; id < noCorridors.size; id++)
+            noCorridors.input[noCorridors.input[10] + id * PackingBatch.META + 6] = 0;
+        plans.add(noCorridors);
+        Set<GridPos> many = new HashSet<>();
+        for (int i = 0; i < 70; i++) many.add(new GridPos(i % 5, i / 25, i / 5 % 5));
+        plans.add(PackingBatch.prepare(new PackingInput(91, 0, many, List.of(small),
+                List.of(), List.of(), 6, true, many,
+                List.of(OrientedBox.axisAligned(-1, -1, -1, 6, 6, 6)))));
+        PackingBatch deferred = PackingBatch.prepare(new PackingInput(42, 0, separated, List.of(small),
+                List.of(), List.of(), 3, true, separated,
+                List.of(OrientedBox.axisAligned(1.1f, -.5f, -.5f, 4, 1.5f, 1.5f))));
+        deferred.input[22] = deferred.initial[4] + 1;
+        plans.add(deferred);
+        PackingGroup group = new PackingGroup(plans);
+        var combined = group.split(gpu(group));
+        for (int i = 0; i < plans.size(); i++) {
+            PackingBatch plan = plans.get(i);
+            int[] expected = plan.compactResult(FieldOracle.solve(plan));
+            int[] actual = gpu(plan);
+            assertArrayEquals(expected, actual, "Separate per-cell result " + i);
+            assertArrayEquals(expected, combined.get(i), "Grouped per-cell result " + i);
+            assertArrayEquals(expected, gpu(plan), "Repeated buffer upload " + i);
+            assertEquals(plan.decode(expected), plan.decode(actual));
+            assertEquals(plan.guards(expected), plan.guards(actual));
+        }
+        assertEquals(3, combined.get(0)[24]);
+        assertEquals(2, combined.get(1)[24]);
+        assertEquals(0, combined.get(2)[24]);
+        assertEquals(1, combined.get(3)[24]);
+        assertTrue(combined.get(4)[24] > 1);
+        assertTrue(noCorridors.guards(combined.get(4)).isEmpty());
+        assertEquals(70, combined.get(5)[24]);
+        assertEquals(0, combined.get(6)[24], "A progressing pass must defer ranking until normal filling finishes");
+        List<PackingBatch> reverse = new ArrayList<>(plans);
+        Collections.reverse(reverse);
+        var reversed = new PackingGroup(reverse);
+        var output = reversed.split(gpu(reversed));
+        for (int i = 0; i < plans.size(); i++)
+            assertArrayEquals(combined.get(i), output.get(plans.size() - 1 - i));
         assertFalse(worker.failed());
     }
     private static void assertPoses(List<RegionPiece> expected, List<RegionPiece> actual, String context) {

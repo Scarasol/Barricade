@@ -7,9 +7,10 @@ public final class FieldRules {
     public static final int SKELETON_SIDE = 4;
     public static final int SKELETON_OFFSET = 2;
     public static final int PRIMARY_PASSES = 4, LAYERS = 5;
-    // A fine cube reads the intersecting skeleton cubes and each skeleton's one-cube geometry halo.
-    public static final int DEPENDENCY_RADIUS = (2 * SKELETON_SIDE + REGION_SIDE - 1) / REGION_SIDE;
-    public static final int DISPLAY_RADIUS = DEPENDENCY_RADIUS + 1;
+    public static final int MAX_MODEL_RADIUS = 5;
+    // A ranked body can cross its cube; include its skeleton inputs and their geometry halo.
+    public static final int DEPENDENCY_RADIUS = (2 * SKELETON_SIDE + MAX_MODEL_RADIUS + REGION_SIDE - 1) / REGION_SIDE;
+    public static final int DISPLAY_RADIUS = DEPENDENCY_RADIUS + (MAX_MODEL_RADIUS + REGION_SIDE - 1) / REGION_SIDE;
     public static final float OVERHANG = .5f;
     public static final String FINGERPRINT = "regional-8:side=" + REGION_SIDE + ":skeleton=" + SKELETON_SIDE + ":offset=" + SKELETON_OFFSET
             + ":skeletonPasses=1:passes=" + PRIMARY_PASSES + ":bounds=closed-body-and-corridors"

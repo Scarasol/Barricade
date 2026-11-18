@@ -1,0 +1,21 @@
+{
+  "replace": false,
+  "values": [
+    {
+      "id": "tacz:target",
+      "required": false
+    },
+    {
+      "id": "tacz:statue",
+      "required": false
+    },
+    {
+      "id": "geckolib:fertilizer",
+      "required": false
+    },
+    {
+      "id": "geckolib:gecko_habitat",
+      "required": false
+    }
+  ]
+}

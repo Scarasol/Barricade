@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.FenceBlock;
+import net.minecraft.world.phys.AABB;
 import org.joml.Quaternionf;
 import org.junit.jupiter.api.Test;
 
@@ -28,6 +29,54 @@ class TerrainShapesTest {
                 new CollisionBox(.9f, 0, .9f, 1, .85f, 1))) {
             var terrain = new TerrainShapes(world, ignored -> true, ignored -> table);
             assertFalse(terrain.view(Set.of(BlockPos.ZERO), Map.of(BlockPos.ZERO, embedded)).visible(candidate));
+        }
+    }
+
+    @Test void singleBlockVisualCoverageReachesBeyondTheAnchorNeighborhoodAndReusesItsCapture() {
+        for (BlockPos pos : List.of(BlockPos.ZERO, new BlockPos(-17, -60, -1), new BlockPos(15, 15, 15))) {
+            var world = MemoryFixture.create(false);
+            world.context(Map.of(pos, Blocks.FURNACE.defaultBlockState()), Map.of());
+            var embedded = new EmbeddedBlock(pos, 7, 1);
+            var model = embedded.model(world);
+            assertEquals(1, model.parts().size());
+            var pose = embedded.transform(model);
+            var center = pose.transformPoint(.5f, 6.5f, .5f);
+            var outside = pose.transformPoint(2, 6.5f, .5f);
+            BlockPos owner = BlockPos.containing(pos.getX() + (double) center.x,
+                    pos.getY() + (double) center.y, pos.getZ() + (double) center.z);
+            var small = new PileModel("small", "minecraft:stone", .1f, .1f, .1f, 1, List.of(CollisionBox.CUBE));
+            var template = object(owner);
+            var inside = new FieldObject(template.key(), owner, PilePiece.create(small,
+                    pos.getX() - owner.getX() + center.x, pos.getY() - owner.getY() + center.y,
+                    pos.getZ() - owner.getZ() + center.z, 1, pose.rotation()));
+            var clear = new FieldObject(template.key(), owner, PilePiece.create(small,
+                    pos.getX() - owner.getX() + outside.x, pos.getY() - owner.getY() + outside.y,
+                    pos.getZ() - owner.getZ() + outside.z, 1, pose.rotation()));
+            for (BlockPos cell : FieldVisibility.cells(inside))
+                assertTrue(Math.abs(cell.getX() - pos.getX()) > 1 || Math.abs(cell.getY() - pos.getY()) > 1
+                        || Math.abs(cell.getZ() - pos.getZ()) > 1, "The old anchor search must miss this model end");
+            var blocks = Map.of(pos, embedded);
+            var logical = Set.of(pos, owner);
+            AtomicInteger captures = new AtomicInteger();
+            try (var tall = VisualMeshFixture.box(new AABB(0, 0, 0, 1, 8, 1));
+                 var shortModel = VisualMeshFixture.boxes(CollisionBox.CUBE)) {
+                var terrain = new TerrainShapes(world, ignored -> true,
+                        ignored -> captures.incrementAndGet() == 1 ? tall : shortModel);
+                var view = terrain.view(logical, blocks);
+                assertFalse(view.visible(inside));
+                assertTrue(view.visible(clear), "The broad-phase AABB must not replace the rotated envelope");
+                for (int i = 0; i < 100; i++) assertFalse(view.visible(inside));
+                assertFalse(terrain.view(logical, blocks).visible(inside));
+                assertEquals(1, captures.get(), "Overlay views share the existing refresh-local shape cache");
+                assertTrue(terrain.view(logical, Map.of()).visible(inside), "Removed embeddings leave no suppression");
+                BlockPos pending = pos.east(128);
+                assertTrue(terrain.view(logical, Map.of(pending, new EmbeddedBlock(pending, 8, 1))).visible(inside),
+                        "An unrelated pending anchor must not retain a removed model's indexed coverage");
+                terrain.invalidateEmbedded();
+                assertTrue(terrain.view(logical, blocks).visible(inside), "State refresh must replace the old bounds");
+                assertEquals(2, captures.get());
+                assertEquals(0, world.chunkRequests());
+            }
         }
     }
 

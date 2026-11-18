@@ -8,6 +8,7 @@ import java.util.*;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import org.joml.Vector3f;
@@ -21,13 +22,14 @@ final class TerrainShapes {
     private final Map<BlockPos, List<OrientedBox>> shapes = new HashMap<>();
     private final Map<FieldDefinition, Map<BlockPos, List<FieldVisibility.Shape>>> initial = new HashMap<>();
     private final Map<BlockPos, FieldVisibility.Shape> embeddedShapes = new HashMap<>();
+    private final RenderIndex<BlockPos> embeddedIndex = new RenderIndex<>();
     TerrainShapes(ClientLevel level) { this(level, level::hasChunkAt); }
     TerrainShapes(Level level, Predicate<BlockPos> loaded) { this(level, loaded, model -> MaterialMeshes.get(model, level)); }
     TerrainShapes(Level level, Predicate<BlockPos> loaded, Function<PileModel, StaticMesh> meshes) {
         this.level = level; this.loaded = loaded; this.meshes = meshes;
     }
     void clear() { initial.clear(); invalidateEmbedded(); }
-    void invalidateEmbedded() { shapes.clear(); embeddedShapes.clear(); }
+    void invalidateEmbedded() { shapes.clear(); embeddedShapes.clear(); embeddedIndex.clear(); }
     void synchronize(Map<UUID, FieldRegion> previous, Map<UUID, FieldRegion> current) {
         Map<FieldDefinition, Set<BlockPos>> logical = new HashMap<>();
         for (var region : current.values())
@@ -51,6 +53,7 @@ final class TerrainShapes {
         private final Set<BlockPos> logical;
         private final Map<BlockPos, EmbeddedBlock> embedded;
         private final Map<BlockPos, Neighborhood> neighborhoods = new HashMap<>();
+        private boolean indexed;
         View(Set<BlockPos> logical, Map<BlockPos, EmbeddedBlock> embedded) {
             this.logical = logical; this.embedded = embedded;
         }
@@ -97,38 +100,51 @@ final class TerrainShapes {
             return result;
         }
         private Neighborhood scan(BlockPos cell) {
-            List<FieldVisibility.Shape> obstacles = new ArrayList<>();
-            // Only registered embedded blocks can change the display after placement.
+            if (!indexed) {
+                embedded.values().forEach(TerrainShapes.this::indexEmbedded);
+                indexed = true;
+            }
+            // Retain the existing local wait for registered anchors whose world state is not ready.
             for (BlockPos near : BlockPos.betweenClosed(cell.offset(-1, -1, -1), cell.offset(1, 1, 1))) {
-                BlockPos pos = near.immutable();
-                EmbeddedBlock block = embedded.get(pos);
-                if (block != null) {
+                if (embedded.containsKey(near) && (!loaded.test(near) || !embeddedShapes.containsKey(near)))
+                    return new Neighborhood(false, List.of());
+            }
+            List<FieldVisibility.Shape> obstacles = new ArrayList<>();
+            for (BlockPos pos : embeddedIndex.intersecting(new AABB(cell))) {
+                if (embedded.containsKey(pos)) {
                     if (!loaded.test(pos)) return new Neighborhood(false, List.of());
-                    FieldVisibility.Shape shape = embeddedShapes.get(pos);
-                    if (shape == null) {
-                        var state = level.getBlockState(pos);
-                        if (state.isAir() || state.getBlock() instanceof com.scarasol.barricade.block.BarricadeBlock)
-                            return new Neighborhood(false, List.of());
-                        var model = block.model(level);
-                        StaticMesh mesh = meshes.apply(model);
-                        if (mesh == null) shape = new FieldVisibility.Shape(pos, nativeShapes(pos), true);
-                        else {
-                            var piece = block.transform(model);
-                            var bounds = mesh.bounds;
-                            shape = new FieldVisibility.Shape(pos, List.of(new OrientedBox(
-                                    piece.transformPoint((float) (bounds.minX + bounds.maxX) * .5f,
-                                            (float) (bounds.minY + bounds.maxY) * .5f,
-                                            (float) (bounds.minZ + bounds.maxZ) * .5f),
-                                    new Vector3f((float) bounds.getXsize(), (float) bounds.getYsize(),
-                                            (float) bounds.getZsize()).mul(piece.scale() * .5f), piece.rotation())), true);
-                        }
-                        embeddedShapes.put(pos, shape);
-                    }
-                    obstacles.add(shape);
+                    obstacles.add(embeddedShapes.get(pos));
                 }
             }
             return new Neighborhood(true, List.copyOf(obstacles));
         }
+    }
+    private void indexEmbedded(EmbeddedBlock block) {
+        BlockPos pos = block.pos();
+        if (embeddedShapes.containsKey(pos) || !loaded.test(pos)) return;
+        var state = level.getBlockState(pos);
+        if (state.isAir() || state.getBlock() instanceof com.scarasol.barricade.block.BarricadeBlock) return;
+        var model = block.model(level);
+        StaticMesh mesh = meshes.apply(model);
+        FieldVisibility.Shape shape;
+        if (mesh == null) shape = new FieldVisibility.Shape(pos, nativeShapes(pos), true);
+        else {
+            var piece = block.transform(model);
+            var bounds = mesh.bounds;
+            shape = new FieldVisibility.Shape(pos, List.of(new OrientedBox(
+                    piece.transformPoint((float) (bounds.minX + bounds.maxX) * .5f,
+                            (float) (bounds.minY + bounds.maxY) * .5f,
+                            (float) (bounds.minZ + bounds.maxZ) * .5f),
+                    new Vector3f((float) bounds.getXsize(), (float) bounds.getYsize(),
+                            (float) bounds.getZsize()).mul(piece.scale() * .5f), piece.rotation())), true);
+        }
+        embeddedShapes.put(pos, shape);
+        AABB bounds = null;
+        for (OrientedBox box : shape.boxes()) {
+            AABB part = new AABB(box.minX(), box.minY(), box.minZ(), box.maxX(), box.maxY(), box.maxZ()).move(pos);
+            bounds = bounds == null ? part : bounds.minmax(part);
+        }
+        if (bounds != null) embeddedIndex.put(pos, bounds);
     }
     private List<OrientedBox> nativeShapes(BlockPos pos) {
         return shapes.computeIfAbsent(pos, key -> {

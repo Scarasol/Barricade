@@ -145,7 +145,7 @@ bool fits(int id, int dy) {
     }
     return true;
 }
-bool blocked(int id, int dy, bool ray) {
+bool blockedBy(int id, int dy, bool ray, int kinds) {
     int p=box(id); ivec3 lo,hi;
     bounds(id,1,dy,3,lo,hi);
     for (int x=lo.x; x<=hi.x; x++) for (int y=lo.y; y<=hi.y; y++) for (int z=lo.z; z<=hi.z; z++) {
@@ -155,12 +155,21 @@ bool blocked(int id, int dy, bool ray) {
             int e=s[6]+s[s[9]+node*2]*8;
             ivec3 first=max(max(lo,ivec3(s[e+4],s[e+5],s[e+6])),ivec3(a[0],a[1],a[2]));
             if (any(notEqual(ivec3(x,y,z),first))) continue;
-            if (ray && (s[e+3]==1 || s[e+3]==3)) continue;
+            if ((kinds&(1<<s[e+3]))==0) continue;
             for (int i=0; i<s[e+1]; i++)
                 if (intersects(p,dy,box(s[e]+i),s[e+2],!ray && s[e+3]==0?-5:3)) return true;
         }
     }
     return false;
+}
+bool blocked(int id, int dy, bool ray) { return blockedBy(id,dy,ray,ray?5:15); }
+bool rankingReady() { return a[21]!=0 && (s[0]==0 || s[4]<a[22]); }
+bool needsObject(int owner) { return s[s[13]+owner]==0 && s[s[12]+owner]<44; }
+bool rankedBefore(int left, int right) {
+    if (right<0) return true;
+    int l=s[23]+left*3, r=s[23]+right*3;
+    for (int i=0; i<3; i++) if (s[l+i]!=s[r+i]) return s[l+i]>s[r+i];
+    return left<right;
 }
 bool valid(int start, int count, int dy, bool ray) {
     if (ray && a[18]!=0 && a[20]==0)
@@ -260,6 +269,48 @@ void moveCandidate(int m, ivec3 point) {
         a[p]+=delta.x; a[p+1]+=delta.y; a[p+2]+=delta.z;
     }
     a[m+8]=point.x; a[m+9]=point.y; a[m+10]=point.z;
+}
+void rankCandidate(int id) {
+    int m=a[10]+id*12;
+    if (!rankingReady() || !needsObject(a[m+2])) return;
+    ivec3 point=vec(a[9]+a[m+2]*3)*1024+ivec3(512), delta=point-vec(m+8);
+    moveCandidate(m,point);
+    for (int i=0; i<a[m+6]; i++) {
+        int p=box(a[m+5]+i);
+        a[p]+=delta.x; a[p+1]+=delta.y; a[p+2]+=delta.z;
+    }
+    ivec3 lo,hi;
+    pointBounds(a[m],a[m+1],0,0,lo,hi);
+    ivec3 middle=(lo+hi)/2, last=max(lo,hi-ivec3(1));
+    // A fixed probe budget scores the real domain without a new volume scan.
+    int domain=nearDomain(middle)?1:0;
+    for (int i=0; i<8; i++)
+        if (nearDomain(ivec3((i&1)==0?lo.x:last.x,(i&2)==0?lo.y:last.y,(i&4)==0?lo.z:last.z))) domain++;
+    for (int axis=0; axis<3; axis++) {
+        ivec3 low=middle, high=middle;
+        low[axis]=lo[axis]; high[axis]=last[axis];
+        if (nearDomain(low)) domain++;
+        if (nearDomain(high)) domain++;
+    }
+    bool floor=cell(floorQ(point)-ivec3(0,1,0))==0;
+    int floorHeight=floorQ(point.y)*1024;
+    bool clear=!floor || lo.y>=floorHeight, supported=floor && abs(lo.y-floorHeight)<=36, corridorClear=true;
+    for (int i=0; i<a[m+1]; i++) {
+        if (blockedBy(a[m]+i,0,false,13)) clear=false;
+        if (blockedBy(a[m]+i,-36,false,13)) supported=true;
+        if (blockedBy(a[m]+i,0,false,2)) corridorClear=false;
+    }
+    int corridors=a[m+3]==0?0:3;
+    if (a[m+3]==0) for (int i=0; i<a[m+6]; i++)
+        if (!blocked(a[m+5]+i,0,true)) corridors++;
+    if (!corridorClear) corridors=0;
+    ivec3 excess=max(ivec3(0),-ivec3(a[20])-lo)+max(ivec3(0),hi-ivec3(a[19]+a[20]));
+    bool quota=s[s[16]+a[m+3]]<a[a[15]+a[m+3]];
+    int rank=s[23]+id*3;
+    // Lexicographic priority: solids, real domain, support, corridors, partition, quota, quality.
+    s[rank]=(clear?65536:0)+domain*1024+(supported?512:0)+corridors;
+    s[rank+1]=-(excess.x+excess.y+excess.z);
+    s[rank+2]=(quota?536870912:0)+min(a[m+4],536870911);
 }
 ivec2 closest(ivec3 point) {
     ivec3 c=floorQ(point);
@@ -373,6 +424,29 @@ void evaluate(int id) {
 }
 #endif
 #if !defined(BARRICADE_STAGE) || BARRICADE_STAGE == 1
+void rankOwner(int owner) {
+    if (!rankingReady() || !needsObject(owner)) return;
+    int best=-1;
+    for (int p=0; p<5; p++) {
+        int range=a[16]+(p*a[7]+owner)*2;
+        for (int id=a[range]; id<a[range+1]; id++) if (rankedBefore(id,best)) best=id;
+    }
+    s[s[17]+owner]=best;
+}
+void retainObject() {
+    if (!rankingReady()) return;
+    for (int owner=0; owner<a[7]; owner++) {
+        if (!needsObject(owner)) continue;
+        int best=s[s[17]+owner];
+        if (best<0) continue;
+        int m=a[10]+best*12, result=s[25]+owner*4;
+        s[result]=best; s[result+1]=a[m+8]; s[result+2]=a[m+9]; s[result+3]=a[m+10];
+        s[0]++; s[24]++;
+        s[s[15]+best]=1; s[s[13]+owner]++; s[s[16]+a[m+3]]++;
+        // Later cells see the new coverage, without allocating oversized occupancy or invalid corridors.
+        cover(a[m],a[m+1],0,true);
+    }
+}
 bool conflicts(int left, int right) {
     int lm=a[10]+left*12, rm=a[10]+right*12;
     int leftDy=s[s[14]+left*2+1], rightDy=s[s[14]+right*2+1];
@@ -467,16 +541,22 @@ void applyOwner(int owner) {
 void main() {
 #if defined(BARRICADE_STAGE) && BARRICADE_STAGE == 0
     if (stage==0) { int local=int(gl_GlobalInvocationID.x); int id=batchBase+local; if (local<batchCount && id<a[11]) evaluate(id); }
+    else if (stage==4) { int local=int(gl_GlobalInvocationID.x); int id=batchBase+local; if (local<batchCount && id<a[11]) rankCandidate(id); }
 #elif defined(BARRICADE_STAGE) && BARRICADE_STAGE == 1
     if (int(gl_GlobalInvocationID.x)>=batchCount) return;
     if (stage==1) { int owner=batchBase+int(gl_GlobalInvocationID.x); if (owner<a[7]) propose(owner); }
     else if (stage==2) { int owner=batchBase+int(gl_GlobalInvocationID.x); if (owner<a[7]) screen(owner); }
     else if (stage==3) { int owner=batchBase+int(gl_GlobalInvocationID.x); if (owner<a[7]) applyOwner(owner); }
+    else if (stage==5) { int owner=batchBase+int(gl_GlobalInvocationID.x); if (owner<a[7]) rankOwner(owner); }
+    else if (stage==6 && gl_GlobalInvocationID.x==0) retainObject();
 #else
     if (stage==0) { int id=batchBase+int(gl_GlobalInvocationID.x); if (id<a[11]) evaluate(id); }
     else if (stage==1) { int owner=batchBase+int(gl_GlobalInvocationID.x); if (owner<a[7]) propose(owner); }
     else if (stage==2) { int owner=batchBase+int(gl_GlobalInvocationID.x); if (owner<a[7]) screen(owner); }
     else if (stage==3) { int owner=batchBase+int(gl_GlobalInvocationID.x); if (owner<a[7]) applyOwner(owner); }
+    else if (stage==4) { int id=batchBase+int(gl_GlobalInvocationID.x); if (id<a[11]) rankCandidate(id); }
+    else if (stage==5) { int owner=batchBase+int(gl_GlobalInvocationID.x); if (owner<a[7]) rankOwner(owner); }
+    else if (stage==6 && gl_GlobalInvocationID.x==0) retainObject();
 #endif
 }
 #else

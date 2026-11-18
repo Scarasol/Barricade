@@ -212,4 +212,63 @@ class FieldOverlayTest {
         assertTrue(replacedByGrass.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
         assertEquals(objects, replacedByGrass.visible(), "Deleting the whole neighboring region cannot revive its old terrain obstacle");
     }
+
+    @Test void aRankedObjectSurvivesTerrainFilteringButNotDamageOrColdReloadedDamage() {
+        var model = new PileModel("large", "minecraft:stone", 1, 1, 1, 1,
+                List.of(new CollisionBox(-.75f, -.75f, -.75f, 1.75f, 1.75f, 1.75f)));
+        BlockPos cell = new BlockPos(-7, -60, -4);
+        var field = new SpatialField("test", DEFINITION, List.of(model), FieldOracle::solve);
+        var base = field.query(Set.of(cell));
+        assertEquals(1, base.size());
+        long jobs = field.metrics().jobs();
+        var world = MemoryFixture.create(false);
+        world.context(Map.of(cell.below(), Blocks.STONE.defaultBlockState()), Map.of());
+        var terrain = new TerrainShapes(world, ignored -> true);
+        var intact = region(Set.of(cell), new SpatialMask());
+        var overlay = new FieldOverlay(intact, 1, base, List.of(intact));
+        assertTrue(overlay.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
+        assertEquals(base, overlay.visible(), "Even a deep floor crossing must not erase the sole generated body");
+        SpatialMask mask = new SpatialMask();
+        mask.set(cell);
+        var damaged = FieldRegion.load(region(Set.of(cell), mask).save());
+        overlay = new FieldOverlay(damaged, 2, base, List.of(damaged));
+        assertTrue(overlay.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
+        assertTrue(overlay.visible().isEmpty());
+        assertEquals(base, field.query(Set.of(cell)));
+        assertEquals(jobs, field.metrics().jobs());
+        var cold = new SpatialField("test", DEFINITION, List.of(model), FieldOracle::solve);
+        overlay = new FieldOverlay(damaged, 3, cold.query(damaged.domain(), damaged.baseline()), List.of(damaged));
+        assertTrue(overlay.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
+        assertTrue(overlay.visible().isEmpty(), "Reload must not replace the destroyed ranked object");
+        assertEquals(0, world.chunkRequests());
+    }
+    @Test void perCellRankedObjectsDoNotResurrectAfterPartialDamageOrReload() {
+        var model = new PileModel("long", "minecraft:stone", 1, 1, 1, 1,
+                List.of(new CollisionBox(-1.5f, 0, 0, 2.5f, .12f, .12f)));
+        Set<BlockPos> cells = Set.of(BlockPos.ZERO, BlockPos.ZERO.east(), BlockPos.ZERO.east(2));
+        var field = new SpatialField("test", DEFINITION, List.of(model), FieldOracle::solve);
+        var base = field.query(cells);
+        for (BlockPos cell : cells)
+            assertTrue(base.stream().anyMatch(object -> object.owner().equals(cell)));
+        var world = MemoryFixture.create(false);
+        world.context(Map.of(), Map.of());
+        var terrain = new TerrainShapes(world, ignored -> true);
+        var mask = new SpatialMask();
+        mask.set(BlockPos.ZERO.east());
+        var damaged = FieldRegion.load(region(cells, mask).save());
+        var expected = base.stream().filter(object -> !FieldVisibility.damaged(object, mask)).toList();
+        assertTrue(expected.size() < base.size());
+        assertFalse(expected.isEmpty());
+        long jobs = field.metrics().jobs();
+        for (var layout : List.of(base,
+                new SpatialField("test", DEFINITION, List.of(model), FieldOracle::solve)
+                        .query(damaged.domain(), damaged.baseline()))) {
+            var overlay = new FieldOverlay(damaged, 1, layout, List.of(damaged));
+            while (!overlay.advance(terrain, 1, Long.MAX_VALUE)) { }
+            assertEquals(expected, overlay.visible());
+        }
+        assertEquals(base, field.query(cells));
+        assertEquals(jobs, field.metrics().jobs());
+        assertEquals(0, world.chunkRequests());
+    }
 }

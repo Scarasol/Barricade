@@ -24,9 +24,17 @@ final class RenderIndex<T> {
         }
     }
     Set<T> near(Vec3 camera, double distance) {
+        return inSections(new AABB(camera, camera).inflate(distance));
+    }
+    Set<T> intersecting(AABB box) {
+        Set<T> result = inSections(box);
+        if (!result.isEmpty()) result.removeIf(item -> !bounds.get(item).intersects(box));
+        return result;
+    }
+    private Set<T> inSections(AABB box) {
         if (sections.isEmpty()) return Set.of();
         Set<T> result = new HashSet<>();
-        for (long key : sections(new AABB(camera, camera).inflate(distance))) {
+        for (long key : sections(box)) {
             var bucket = sections.get(key);
             if (bucket != null) result.addAll(bucket);
         }

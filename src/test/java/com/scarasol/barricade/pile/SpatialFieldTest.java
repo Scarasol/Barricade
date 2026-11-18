@@ -168,7 +168,7 @@ class SpatialFieldTest {
     }
     @Test void scopedBaselinesCoverEverySkeletonGeometryInputAtShiftedNegativeBoundaries() {
         int side = FieldRules.REGION_SIDE, coarseSide = FieldRules.SKELETON_SIDE, offset = FieldRules.SKELETON_OFFSET;
-        assertEquals((2 * coarseSide + side - 1) / side, FieldRules.DEPENDENCY_RADIUS);
+        assertEquals((2 * coarseSide + FieldRules.MAX_MODEL_RADIUS + side - 1) / side, FieldRules.DEPENDENCY_RADIUS);
         for (int target = -24; target <= 24; target++) {
             int fine = Math.floorDiv(target, side), origin = fine * side;
             int lo = Math.floorDiv(origin - 1 + offset, coarseSide);

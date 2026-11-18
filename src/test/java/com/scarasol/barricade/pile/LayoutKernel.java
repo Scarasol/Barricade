@@ -59,6 +59,9 @@ public final class LayoutKernel {
         return true;
     }
     private boolean blocked(int id, int dy, boolean ray) {
+        return blockedBy(id, dy, ray, ray ? 5 : 15);
+    }
+    private boolean blockedBy(int id, int dy, boolean ray, int kinds) {
         int p = box(id);
         int[] b = bounds(id, 1, dy, 3);
         for (int x = b[0]; x <= b[3]; x++) for (int y = b[1]; y <= b[4]; y++) for (int z = b[2]; z <= b[5]; z++) {
@@ -70,13 +73,105 @@ public final class LayoutKernel {
                 if (x != Math.max(Math.max(b[0], s[e + 4]), a[0])
                         || y != Math.max(Math.max(b[1], s[e + 5]), a[1])
                         || z != Math.max(Math.max(b[2], s[e + 6]), a[2])) continue;
-                if (ray && (s[e + 3] == 1 || s[e + 3] == 3)) continue;
+                if ((kinds & (1 << s[e + 3])) == 0) continue;
                 for (int i = 0; i < s[e + 1]; i++)
                     if (FixedGeometry.intersects(a, p, dy, box(s[e] + i), s[e + 2],
                             !ray && s[e + 3] == 0 ? -5 : 3)) return true;
             }
         }
         return false;
+    }
+    private boolean rankingReady() { return a[21] != 0 && (s[0] == 0 || s[4] < a[22]); }
+    private boolean needsObject(int owner) {
+        return s[s[13] + owner] == 0 && s[s[12] + owner] < 44;
+    }
+    public boolean rankedBefore(int left, int right) {
+        if (right < 0) return true;
+        int l = s[23] + left * 3, r = s[23] + right * 3;
+        for (int i = 0; i < 3; i++) if (s[l + i] != s[r + i]) return s[l + i] > s[r + i];
+        return left < right;
+    }
+    public void rankCandidate(int id) {
+        int m = a[10] + id * 12;
+        if (!rankingReady() || !needsObject(a[m + 2])) return;
+        int owner = a[9] + a[m + 2] * 3;
+        int[] point = {a[owner] * 1024 + 512, a[owner + 1] * 1024 + 512, a[owner + 2] * 1024 + 512};
+        int dx = point[0] - a[m + 8], dy = point[1] - a[m + 9], dz = point[2] - a[m + 10];
+        move(m, point[0], point[1], point[2]);
+        for (int i = 0; i < a[m + 6]; i++) {
+            int p = box(a[m + 5] + i);
+            a[p] += dx; a[p + 1] += dy; a[p + 2] += dz;
+        }
+        int[] lo = {Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE};
+        int[] hi = {Integer.MIN_VALUE, Integer.MIN_VALUE, Integer.MIN_VALUE};
+        for (int i = 0; i < a[m + 1]; i++) {
+            int p = box(a[m] + i);
+            for (int axis = 0; axis < 3; axis++) {
+                int radius = FixedGeometry.extent(a, p, axis);
+                lo[axis] = Math.min(lo[axis], a[p + axis] - radius);
+                hi[axis] = Math.max(hi[axis], a[p + axis] + radius);
+            }
+        }
+        int[] middle = new int[3], last = new int[3];
+        for (int axis = 0; axis < 3; axis++) {
+            middle[axis] = (lo[axis] + hi[axis]) / 2;
+            last[axis] = Math.max(lo[axis], hi[axis] - 1);
+        }
+        int domain = near(middle[0], middle[1], middle[2]) ? 1 : 0;
+        for (int i = 0; i < 8; i++)
+            if (near((i & 1) == 0 ? lo[0] : last[0], (i & 2) == 0 ? lo[1] : last[1],
+                    (i & 4) == 0 ? lo[2] : last[2])) domain++;
+        for (int axis = 0; axis < 3; axis++) {
+            int old = middle[axis];
+            middle[axis] = lo[axis];
+            if (near(middle[0], middle[1], middle[2])) domain++;
+            middle[axis] = last[axis];
+            if (near(middle[0], middle[1], middle[2])) domain++;
+            middle[axis] = old;
+        }
+        boolean floor = cell(a[owner], a[owner + 1] - 1, a[owner + 2]) == 0;
+        int floorHeight = a[owner + 1] * 1024;
+        boolean clear = !floor || lo[1] >= floorHeight;
+        boolean supported = floor && Math.abs(lo[1] - floorHeight) <= 36, corridorClear = true;
+        for (int i = 0; i < a[m + 1]; i++) {
+            if (blockedBy(a[m] + i, 0, false, 13)) clear = false;
+            if (blockedBy(a[m] + i, -36, false, 13)) supported = true;
+            if (blockedBy(a[m] + i, 0, false, 2)) corridorClear = false;
+        }
+        int corridors = a[m + 3] == 0 ? 0 : 3;
+        if (a[m + 3] == 0) for (int i = 0; i < a[m + 6]; i++)
+            if (!blocked(a[m + 5] + i, 0, true)) corridors++;
+        if (!corridorClear) corridors = 0;
+        int excess = 0;
+        for (int axis = 0; axis < 3; axis++)
+            excess += Math.max(0, -a[20] - lo[axis]) + Math.max(0, hi[axis] - a[19] - a[20]);
+        boolean quota = s[s[16] + a[m + 3]] < a[a[15] + a[m + 3]];
+        int rank = s[23] + id * 3;
+        s[rank] = (clear ? 65536 : 0) + domain * 1024 + (supported ? 512 : 0) + corridors;
+        s[rank + 1] = -excess;
+        s[rank + 2] = (quota ? 536870912 : 0) + Math.min(a[m + 4], 536870911);
+    }
+    public void rankOwner(int owner) {
+        if (!rankingReady() || !needsObject(owner)) return;
+        int best = -1;
+        for (int phase = 0; phase < 5; phase++) {
+            int range = a[16] + (phase * a[7] + owner) * 2;
+            for (int id = a[range]; id < a[range + 1]; id++) if (rankedBefore(id, best)) best = id;
+        }
+        s[s[17] + owner] = best;
+    }
+    public void retainObject() {
+        if (!rankingReady()) return;
+        for (int owner = 0; owner < a[7]; owner++) {
+            if (!needsObject(owner)) continue;
+            int best = s[s[17] + owner];
+            if (best < 0) continue;
+            int m = a[10] + best * 12, result = s[25] + owner * 4;
+            s[result] = best; s[result + 1] = a[m + 8]; s[result + 2] = a[m + 9]; s[result + 3] = a[m + 10];
+            s[0]++; s[24]++;
+            s[s[15] + best] = 1; s[s[13] + owner]++; s[s[16] + a[m + 3]]++;
+            cover(a[m], a[m + 1], 0, true);
+        }
     }
     private boolean valid(int start, int count, int dy, boolean ray) {
         if (ray && a[18] != 0 && a[20] == 0) for (int i = 0; i < count; i++) {

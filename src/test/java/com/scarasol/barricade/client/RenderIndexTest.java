@@ -21,6 +21,18 @@ class RenderIndexTest {
         index.remove("overhang");
         assertTrue(index.near(new Vec3(17, 1, 1), 0.5).isEmpty());
     }
+    @Test void exactExtentQueriesCrossSectionsAndIgnoreUnrelatedObjectsInTheSameSection() {
+        RenderIndex<String> index = new RenderIndex<>();
+        AABB query = new AABB(-17, -1, -1, -16, 0, 0);
+        assertTrue(index.intersecting(query).isEmpty());
+        index.put("overhang", new AABB(-20, -2, -2, -15, 1, 1));
+        index.put("unrelated", new AABB(-30, -10, -10, -29, -9, -9));
+        assertEquals(Set.of("overhang"), index.intersecting(query));
+        index.put("overhang", new AABB(100, 100, 100, 101, 101, 101));
+        assertTrue(index.intersecting(query).isEmpty());
+        index.clear();
+        assertTrue(index.intersecting(query).isEmpty());
+    }
     @Test void transformedVisualBoundsIncludeEveryRotatedCornerFarFromOrigin() {
         PileModel model = new PileModel("cube", "minecraft:oak_planks", 1, 1, 1, 1, List.of(CollisionBox.CUBE));
         PilePiece piece = PilePiece.create(model, 0.6f, 0.5f, 0.4f, 1.05f,

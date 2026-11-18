@@ -21,7 +21,7 @@ class BetterCombatMixinsTest {
         assertTrue(plugin.shouldApplyMixin("anything", PREFIX + "WindowBoardsBetterCombatAttackMixin"));
         assertTrue(plugin.shouldApplyMixin("anything", PREFIX + "WindowBoardsRadialFilterMixin"));
         assertTrue(plugin.shouldApplyMixin("anything", "com.scarasol.barricade.mixin.WindowBoardsAttackMixin"));
-        var detection = method(bytecode("com/scarasol/barricade/mixin/plugin/MixinPlugin"), "onLoad");
+        var detection = method(bytecode("com/scarasol/barricade/mixin/plugin/MixinPlugin"), "present");
         var call = calls(detection).stream().filter(node -> node.owner.equals("java/lang/Class")
                 && node.name.equals("forName")).findFirst().orElseThrow();
         assertEquals("(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;", call.desc);

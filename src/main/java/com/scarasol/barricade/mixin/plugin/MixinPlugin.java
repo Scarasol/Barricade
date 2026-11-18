@@ -8,17 +8,27 @@ import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
 
 public final class MixinPlugin implements IMixinConfigPlugin {
     private boolean betterCombatLoaded;
+    private boolean taczLoaded;
+    private boolean sbmLoaded;
 
     @Override public void onLoad(String mixinPackage) {
+        betterCombatLoaded = present("net.bettercombat.BetterCombat");
+        taczLoaded = present("com.tacz.guns.GunMod");
+        sbmLoaded = present("com.github.mcmodderanchor.simplebedrockmodel.SimpleBedrockModel");
+    }
+
+    private boolean present(String name) {
         try {
-            Class.forName("net.bettercombat.BetterCombat", false, getClass().getClassLoader());
-            betterCombatLoaded = true;
+            Class.forName(name, false, getClass().getClassLoader());
+            return true;
         } catch (ClassNotFoundException ignored) {
-            betterCombatLoaded = false;
+            return false;
         }
     }
 
     @Override public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
+        if (mixinClassName.startsWith("com.scarasol.barricade.mixin.tacz.")) return taczLoaded;
+        if (mixinClassName.startsWith("com.scarasol.barricade.mixin.sbm.")) return sbmLoaded;
         return !mixinClassName.startsWith("com.scarasol.barricade.mixin.bettercombat.") || betterCombatLoaded;
     }
 

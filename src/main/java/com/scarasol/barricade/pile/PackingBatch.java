@@ -48,6 +48,9 @@ public final class PackingBatch extends FieldBatch {
                 : Math.round(com.scarasol.barricade.recipe.FieldRules.OVERHANG * 1024));
     }
     static PackingBatch prepare(PackingInput snapshot, List<PileModel> palette, int overhang) {
+        return prepare(snapshot, palette, overhang, 1);
+    }
+    static PackingBatch prepare(PackingInput snapshot, List<PileModel> palette, int overhang, int minimumObjects) {
         if (!supported(snapshot)) throw new CapacityException("Region exceeds GPU layout limits");
         List<RegionPiece> kept = snapshot.existing();
         Set<GridPos> work = snapshot.active();
@@ -61,6 +64,8 @@ public final class PackingBatch extends FieldBatch {
         System.arraycopy(dim, 0, h, 0, 6);
         h[18] = 1; h[19] = snapshot.side() * 1024;
         h[20] = overhang;
+        h[21] = minimumObjects;
+        h[22] = Integer.MAX_VALUE;
         h[6] = dim[3] * dim[4] * dim[5]; h[7] = cells.size();
         Ints data = new Ints(); data.add(h);
         h[8] = data.size;
@@ -70,8 +75,8 @@ public final class PackingBatch extends FieldBatch {
         data.add(domain);
         h[9] = data.size;
         cells.forEach(cell -> data.add(cell.x(), cell.y(), cell.z()));
-        Ints boxGeometry = new Ints();
-        List<int[]> entries = new ArrayList<>(), meta = new ArrayList<>();
+        Geometry boxGeometry = new Geometry();
+        List<int[]> entries = new ArrayList<>();
         for (OrientedBox box : snapshot.neighbors()) addEntry(entries, boxGeometry, List.of(box), 0);
         for (OrientedBox box : snapshot.guards()) addEntry(entries, boxGeometry, List.of(box), 1);
         if (snapshot.interior())
@@ -98,7 +103,6 @@ public final class PackingBatch extends FieldBatch {
                 if (rays.size() >= 3) addEntry(entries, boxGeometry, rays.subList(0, 3), 1);
             }
         }
-        List<RegionPiece> candidates = new ArrayList<>();
         Map<Integer, List<OrientedBox>> candidateGuards = new HashMap<>();
         Map<PileModel, ModelGeometry> geometry = new IdentityHashMap<>();
         snapshot.models().forEach(model -> geometry.put(model, new ModelGeometry(model)));
@@ -130,6 +134,16 @@ public final class PackingBatch extends FieldBatch {
             else if (model.elongated()) phaseCounts[1]++;
             else if (model.bulk()) phaseCounts[2]++;
         }
+        int candidateCount = 0, minimumBoxes = 0;
+        for (int phase = 0; phase < 5; phase++)
+            if (!phases.get(phase).isEmpty() && phaseCounts[phase] < quotas[phase]) {
+                int count = cells.size() * TRIALS[phase];
+                candidateCount += count;
+                minimumBoxes += count * phases.get(phase).stream().mapToInt(model -> model.boxes().size()).min().orElseThrow();
+            }
+        List<RegionPiece> candidates = new ArrayList<>(candidateCount);
+        Ints metadata = new Ints(candidateCount * META);
+        boxGeometry.ensureCapacity(minimumBoxes * BOX);
         List<List<OrientedBox>> anchorsByOwner = new ArrayList<>(cells.size());
         for (GridPos cell : cells) {
             interrupted();
@@ -216,38 +230,47 @@ public final class PackingBatch extends FieldBatch {
                     }
                     int score = smallWithFillers && phase >= 2 && PileGeometry.axisAlignment(rotation) > .985f
                             ? Math.max(1, Math.round(shape.score * .65f)) : shape.score;
-                    meta.add(new int[]{start, count, owner, phase,
-                            score,
-                            rayStart, rayCount, anchorId, Math.round(center.x * 1024),
-                            Math.round(center.y * 1024), Math.round(center.z * 1024), random.nextInt()});
+                    int m = metadata.reserve(META);
+                    metadata.values[m] = start; metadata.values[m + 1] = count;
+                    metadata.values[m + 2] = owner; metadata.values[m + 3] = phase;
+                    metadata.values[m + 4] = score;
+                    metadata.values[m + 5] = rayStart; metadata.values[m + 6] = rayCount; metadata.values[m + 7] = anchorId;
+                    metadata.values[m + 8] = Math.round(center.x * 1024);
+                    metadata.values[m + 9] = Math.round(center.y * 1024);
+                    metadata.values[m + 10] = Math.round(center.z * 1024);
+                    metadata.values[m + 11] = random.nextInt();
                     candidates.add(piece);
                 }
                 ranges[range + 1] = candidates.size();
             }
         }
-        h[10] = data.size; meta.forEach(data::add); h[11] = meta.size();
-        h[12] = data.size; data.add(boxGeometry.array());
+        // All section lengths are now known; assemble once without copying the geometry through a temporary array.
+        data.ensureCapacity(data.size + metadata.size + boxGeometry.size + entries.size() * 4
+                + 5 + ranges.length + cells.size() * 375);
+        h[10] = data.size; data.add(metadata); h[11] = candidates.size();
+        h[12] = data.size; data.add(boxGeometry);
         h[13] = data.size; entries.forEach(data::add); h[14] = entries.size();
         h[15] = data.size;
         data.add(quotas);
         h[16] = data.size; data.add(ranges);
         h[17] = data.size;
-        int[] points = new int[cells.size() * 375];
+        data.reserve(cells.size() * 375);
         Random jitter = new Random(snapshot.seed());
         for (GridPos cell : work.stream().sorted().toList()) {
             int owner = owners.get(cell);
             for (int x = 0; x < 5; x++) for (int y = 0; y < 5; y++) for (int z = 0; z < 5; z++) {
-                int p = owner * 375 + (x * 25 + y * 5 + z) * 3;
-                points[p] = Math.round((cell.x() + (x + .2f + jitter.nextFloat() * .6f) / 5) * 1024);
-                points[p + 1] = Math.round((cell.y() + (y + .2f + jitter.nextFloat() * .6f) / 5) * 1024);
-                points[p + 2] = Math.round((cell.z() + (z + .2f + jitter.nextFloat() * .6f) / 5) * 1024);
+                int p = h[17] + owner * 375 + (x * 25 + y * 5 + z) * 3;
+                data.values[p] = Math.round((cell.x() + (x + .2f + jitter.nextFloat() * .6f) / 5) * 1024);
+                data.values[p + 1] = Math.round((cell.y() + (y + .2f + jitter.nextFloat() * .6f) / 5) * 1024);
+                data.values[p + 2] = Math.round((cell.z() + (z + .2f + jitter.nextFloat() * .6f) / 5) * 1024);
             }
         }
-        data.add(points);
         int[] input = data.array();
         System.arraycopy(h, 0, input, 0, HEADER);
         int n = cells.size(), capacity = Math.min(Arrays.stream(ROUNDS).sum() * n, candidates.size());
-        int outputCapacity = Arrays.stream(ROUNDS).sum() * n;
+        // Ranked results have a per-owner tail; normal poses and their corridor records stay untouched.
+        int normalOutputCapacity = Arrays.stream(ROUNDS).sum() * n;
+        int outputCapacity = normalOutputCapacity + h[21] * n;
         int[] s = new int[HEADER];
         int cursor = HEADER;
         s[5] = cursor; cursor += outputCapacity * 4;
@@ -266,6 +289,9 @@ public final class PackingBatch extends FieldBatch {
         s[20] = cursor++;
         s[21] = cursor; cursor += n;
         s[22] = cursor++;
+        // Ranking runs last and can reuse the contiguous normal scores and acceptance flags.
+        s[23] = s[14];
+        s[25] = s[5] + normalOutputCapacity * 4;
         int[] state = new int[cursor];
         System.arraycopy(s, 0, state, 0, HEADER);
         Arrays.fill(state, s[8], s[8] + h[6], -1);
@@ -281,13 +307,18 @@ public final class PackingBatch extends FieldBatch {
         }
         System.arraycopy(phaseCounts, 0, state, s[16], phaseCounts.length);
         if (state[3] != 0) throw new CapacityException("Initial occupancy exceeds batch layout limits");
+        if (input[21] != 0) {
+            input[21] = 0;
+            for (int owner = 0; owner < n; owner++)
+                if (state[s[13] + owner] == 0 && state[s[12] + owner] < 44) { input[21] = 1; break; }
+        }
         return new PackingBatch(input, state, candidates, kept, candidateGuards);
     }
     /** Exact corridors selected with newly accepted panels, not a final-layout approximation. */
     public List<OrientedBox> guards(int[] state) {
         if (state[3] != 0) throw new CapacityException("Batch occupancy capacity exceeded");
         List<OrientedBox> result = new ArrayList<>();
-        for (int p = state[5]; p < initial[6]; p += 4) {
+        for (int p = state[5]; p < initial[25]; p += 4) {
             int id = state[p];
             if (id < 0) continue;
             int m = input[10] + id * META;
@@ -309,18 +340,17 @@ public final class PackingBatch extends FieldBatch {
         if (state[3] != 0) throw new CapacityException("Batch occupancy capacity exceeded");
         List<RegionPiece> result = new ArrayList<>(preserved);
         if (state[0] < 0 || state[0] > candidates.size()) throw new IllegalStateException("Invalid batch result size");
-        int decoded = 0, owners = input[7], slot = 0;
-        for (int phase = 0; phase < ROUNDS.length; phase++) for (int round = 0; round < ROUNDS[phase]; round++)
-            for (int k = 0; k < owners; k++, slot++) {
-                int record = state[5] + slot * 4, id = state[record];
-                if (id < 0) continue;
-                int m = input[10] + id * META;
-                RegionPiece piece = candidates.get(id);
-                result.add(new RegionPiece(piece.owner(), piece.piece().translated(
-                        (state[record + 1] - input[m + 8]) / 1024f, (state[record + 2] - input[m + 9]) / 1024f,
-                        (state[record + 3] - input[m + 10]) / 1024f)));
-                decoded++;
-            }
+        int decoded = 0;
+        for (int record = state[5]; record < initial[6]; record += 4) {
+            int id = state[record];
+            if (id < 0) continue;
+            int m = input[10] + id * META;
+            RegionPiece piece = candidates.get(id);
+            result.add(new RegionPiece(piece.owner(), piece.piece().translated(
+                    (state[record + 1] - input[m + 8]) / 1024f, (state[record + 2] - input[m + 9]) / 1024f,
+                    (state[record + 3] - input[m + 10]) / 1024f)));
+            decoded++;
+        }
         if (decoded != state[0]) throw new IllegalStateException("Batch result count does not match placed candidates");
         return List.copyOf(result);
     }
@@ -400,12 +430,12 @@ public final class PackingBatch extends FieldBatch {
         }
         return result;
     }
-    private static void addEntry(List<int[]> entries, Ints boxes, List<OrientedBox> colliders, int guard) {
+    private static void addEntry(List<int[]> entries, Geometry boxes, List<OrientedBox> colliders, int guard) {
         int start = boxes.size / BOX;
         addGeometry(boxes, colliders);
         if (!colliders.isEmpty()) entries.add(new int[]{start, colliders.size(), 0, guard});
     }
-    private static void addGeometry(Ints boxes, List<OrientedBox> colliders) {
+    private static void addGeometry(Geometry boxes, List<OrientedBox> colliders) {
         int offset = boxes.reserve(colliders.size() * BOX);
         for (OrientedBox collider : colliders) {
             FixedGeometry.encode(collider, boxes.values, offset);
@@ -426,18 +456,54 @@ public final class PackingBatch extends FieldBatch {
         return x < 0 || y < 0 || z < 0 || x >= a[3] || y >= a[4] || z >= a[5] ? -1
                 : (x * a[4] + y) * a[5] + z;
     }
+    /** Geometry grows in segments; only the final input assembly copies its encoded boxes. */
+    private static final class Geometry {
+        private record Segment(int[] values, int length) { }
+        private final List<Segment> segments = new ArrayList<>();
+        int[] values = new int[4096];
+        int size, used;
+        void ensureCapacity(int length) {
+            if (used + length <= values.length) return;
+            if (used != 0) segments.add(new Segment(values, used));
+            values = new int[Math.max(length, values.length * 2)];
+            used = 0;
+        }
+        int reserve(int length) {
+            ensureCapacity(length);
+            int offset = used;
+            used += length; size += length;
+            return offset;
+        }
+    }
     private static final class Ints {
-        int[] values = new int[4096]; int size;
+        int[] values; int size;
+        Ints() { this(4096); }
+        Ints(int capacity) { values = new int[capacity]; }
         void add(int... data) {
             int offset = reserve(data.length);
             System.arraycopy(data, 0, values, offset, data.length);
         }
+        void add(Ints data) {
+            int offset = reserve(data.size);
+            System.arraycopy(data.values, 0, values, offset, data.size);
+        }
+        void add(Geometry data) {
+            int offset = reserve(data.size);
+            for (Geometry.Segment segment : data.segments) {
+                System.arraycopy(segment.values, 0, values, offset, segment.length);
+                offset += segment.length;
+            }
+            System.arraycopy(data.values, 0, values, offset, data.used);
+        }
+        void ensureCapacity(int capacity) {
+            if (capacity > values.length) values = Arrays.copyOf(values, Math.max(capacity, values.length * 2));
+        }
         int reserve(int length) {
             int offset = size;
-            if (size + length > values.length) values = Arrays.copyOf(values, Math.max(size + length, values.length * 2));
+            ensureCapacity(size + length);
             size += length;
             return offset;
         }
-        int[] array() { return Arrays.copyOf(values, size); }
+        int[] array() { return size == values.length ? values : Arrays.copyOf(values, size); }
     }
 }

@@ -23,12 +23,19 @@ final class VisualMeshFixture {
     static StaticMesh boxes(CollisionBox... boxes) { return boxes(List.of(boxes)); }
 
     static StaticMesh boxes(List<CollisionBox> boxes) {
+        return geometry(boxes.stream().map(box -> new AABB(box.minX(), box.minY(), box.minZ(),
+                box.maxX(), box.maxY(), box.maxZ())).toList());
+    }
+
+    static StaticMesh box(AABB bounds) { return geometry(List.of(bounds)); }
+
+    private static StaticMesh geometry(List<AABB> boxes) {
         MemoryFixture.create(true);
         List<StaticMesh.Vertex> vertices = new ArrayList<>();
         AABB bounds = null;
-        for (CollisionBox box : boxes) {
-            float x = box.minX(), y = box.minY(), z = box.minZ();
-            float a = box.maxX(), b = box.maxY(), c = box.maxZ();
+        for (AABB box : boxes) {
+            float x = (float) box.minX, y = (float) box.minY, z = (float) box.minZ;
+            float a = (float) box.maxX, b = (float) box.maxY, c = (float) box.maxZ;
             quad(vertices, x,y,z, x,y,c, x,b,c, x,b,z);
             quad(vertices, a,y,c, a,y,z, a,b,z, a,b,c);
             quad(vertices, x,y,c, x,y,z, a,y,z, a,y,c);

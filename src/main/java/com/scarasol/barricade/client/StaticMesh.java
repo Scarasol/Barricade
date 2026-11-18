@@ -18,14 +18,23 @@ final class StaticMesh implements AutoCloseable {
     record Vertex(float x, float y, float z, int red, int green, int blue, int alpha,
                   float u, float v, int overlay, int light, float nx, float ny, float nz) {
         void write(VertexConsumer out, PoseStack.Pose pose, int worldLight) {
-            out.vertex(pose.pose(), x, y, z).color(red, green, blue, alpha).uv(u, v)
-                    .overlayCoords(overlay).uv2(mergeLight(light, worldLight))
+            write(out, pose, worldLight, -1, -1);
+        }
+
+        void write(VertexConsumer out, PoseStack.Pose pose, int worldLight, int tint, int worldOverlay) {
+            out.vertex(pose.pose(), x, y, z).color(red * (tint >>> 16 & 255) / 255,
+                            green * (tint >>> 8 & 255) / 255, blue * (tint & 255) / 255,
+                            alpha * (tint >>> 24 & 255) / 255).uv(u, v)
+                    .overlayCoords(worldOverlay == -1 ? overlay : worldOverlay).uv2(mergeLight(light, worldLight))
                     .normal(pose.normal(), nx, ny, nz).endVertex();
         }
     }
 
     interface Acceleration extends AutoCloseable {
         boolean draw(VertexConsumer out, PoseStack.Pose pose, int light);
+        default boolean draw(VertexConsumer out, PoseStack.Pose pose, int light, int color, int overlay) {
+            return color == -1 && overlay == -1 && draw(out, pose, light);
+        }
         @Override void close();
     }
 
@@ -85,13 +94,17 @@ final class StaticMesh implements AutoCloseable {
         }
 
         void draw(PoseStack.Pose pose, MultiBufferSource buffers, int light) {
+            draw(pose, buffers, light, -1, -1);
+        }
+
+        void draw(PoseStack.Pose pose, MultiBufferSource buffers, int light, int color, int overlay) {
             VertexConsumer out = buffers.getBuffer(material);
             if (!attempted) {
                 acceleration = AcceleratedRenderingBridge.create(this, out);
                 attempted = acceleration != null;
             }
-            if (acceleration != null && acceleration.draw(out, pose, light)) return;
-            for (Vertex vertex : vertices) vertex.write(out, pose, light);
+            if (acceleration != null && acceleration.draw(out, pose, light, color, overlay)) return;
+            for (Vertex vertex : vertices) vertex.write(out, pose, light, color, overlay);
         }
 
         @Override public void close() {
@@ -101,11 +114,18 @@ final class StaticMesh implements AutoCloseable {
     }
 
     final List<Batch> batches;
+    final List<Batch> bakedBatches;
     final AABB bounds;
     private List<Batch> surfaces;
+    private List<Batch> bakedSurfaces;
 
     StaticMesh(List<Batch> batches, AABB bounds) {
+        this(batches, batches, bounds);
+    }
+
+    StaticMesh(List<Batch> batches, List<Batch> bakedBatches, AABB bounds) {
         this.batches = List.copyOf(batches);
+        this.bakedBatches = List.copyOf(bakedBatches);
         this.bounds = bounds;
     }
 
@@ -117,6 +137,12 @@ final class StaticMesh implements AutoCloseable {
     List<Batch> surfaces() {
         if (surfaces == null) surfaces = batches.stream().flatMap(batch -> batch.surfaces().stream()).toList();
         return surfaces;
+    }
+
+    List<Batch> bakedSurfaces() {
+        if (bakedSurfaces == null)
+            bakedSurfaces = bakedBatches.stream().flatMap(batch -> batch.surfaces().stream()).toList();
+        return bakedSurfaces;
     }
 
     @Override public void close() {

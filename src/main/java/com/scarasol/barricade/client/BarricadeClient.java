@@ -43,6 +43,7 @@ public final class BarricadeClient {
         @SubscribeEvent public static void frame(TickEvent.RenderTickEvent event) {
             if (event.phase == TickEvent.Phase.START) {
                 MaterialMeshes.frameStarted();
+                BarricadeRenderer.frameStarted();
                 GpuLayouts.frame();
             }
         }

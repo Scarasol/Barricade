@@ -5,6 +5,6 @@ import net.minecraft.world.level.material.MapColor;
 
 public final class WindowBoardsBlock extends WindowSealBlock {
     public WindowBoardsBlock() {
-        super(SealMaterial.WOOD, Properties.of().mapColor(MapColor.WOOD).strength(1.5f, 3).sound(SoundType.WOOD));
+        super(SealMaterial.WOOD, Properties.of().mapColor(MapColor.WOOD).strength(3, 3).sound(SoundType.WOOD));
     }
 }

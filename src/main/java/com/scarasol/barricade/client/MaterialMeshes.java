@@ -28,6 +28,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.client.RenderTypeHelper;
 import net.minecraftforge.client.model.data.ModelData;
 import org.joml.Vector3f;
@@ -116,6 +117,22 @@ public final class MaterialMeshes {
         while (!RETIRED.isEmpty()) RETIRED.removeFirst().close();
     }
 
+    static void retire(StaticMesh mesh) { RETIRED.add(mesh); }
+
+    static final class Geometry {
+        final Capture capture = new Capture();
+        final VertexConsumer consumer;
+        Geometry(RenderType type) {
+            capture.beginPart(new Vector3f());
+            consumer = capture.getBuffer(type);
+        }
+        StaticMesh finish() {
+            capture.endPart();
+            return new StaticMesh(capture.batches,
+                    capture.bounds == null ? new AABB(0, 0, 0, 0, 0, 0) : capture.bounds);
+        }
+    }
+
     private static StaticMesh capture(List<ModelPart> parts) {
         Minecraft minecraft = Minecraft.getInstance();
         return capture(parts, memory, minecraft.getBlockRenderer(), minecraft.getBlockEntityRenderDispatcher(),
@@ -148,6 +165,7 @@ public final class MaterialMeshes {
             }
         }
         Capture capture = new Capture();
+        List<StaticMesh.Batch> baked = new ArrayList<>();
         for (ModelPart part : parts) {
             BlockPos pos = origin.offset(Math.round(part.x()), Math.round(part.y()), Math.round(part.z()));
             var state = memory.getBlockState(pos);
@@ -169,19 +187,23 @@ public final class MaterialMeshes {
                 }
                 pose.popPose();
             }
+            int first = capture.batches.size();
+            capture.endPart();
+            baked.addAll(capture.batches.subList(first, capture.batches.size()));
             if (entity != null) {
                 var renderer = entityDispatcher.getRenderer(entity);
-                if (renderer != null) {
+                // Keep native multipart ownership checks without culling against the real camera.
+                if (renderer != null && renderer.shouldRender(entity, Vec3.atCenterOf(pos))) {
                     // Auxiliary effects and non-owning assembly parts may legitimately emit nothing.
-                    renderer.render(entity, 0, pose, capture, 0, OverlayTexture.NO_OVERLAY);
-                } else if (state.getRenderShape() == RenderShape.ENTITYBLOCK_ANIMATED) {
+                    CaptureBuffers.render(renderer, entity, pose, capture, 0, OverlayTexture.NO_OVERLAY);
+                } else if (renderer == null && state.getRenderShape() == RenderShape.ENTITYBLOCK_ANIMATED) {
                     throw new UnsupportedOperationException("No registered block entity renderer");
                 }
             }
             capture.endPart();
         }
-        if (capture.count == 0) throw new UnsupportedOperationException("Empty appearance");
-        return new StaticMesh(capture.batches, capture.bounds);
+        if (capture.batches.isEmpty()) throw new UnsupportedOperationException("Empty appearance");
+        return new StaticMesh(capture.batches, baked, capture.bounds);
     }
 
     private static final class Capture implements MultiBufferSource {
@@ -199,7 +221,14 @@ public final class MaterialMeshes {
                             && recorder.vertices.size() % 4 != 0) {
                         throw new UnsupportedOperationException("Incomplete quad output");
                     }
-                    batches.add(new StaticMesh.Batch(type, recorder.vertices, center));
+                    List<StaticMesh.Vertex> vertices = recorder.finish(type);
+                    if (vertices.isEmpty()) return;
+                    batches.add(new StaticMesh.Batch(type, vertices, center));
+                    for (StaticMesh.Vertex vertex : vertices) {
+                        AABB point = new AABB(vertex.x(), vertex.y(), vertex.z(),
+                                vertex.x(), vertex.y(), vertex.z());
+                        bounds = bounds == null ? point : bounds.minmax(point);
+                    }
                 }
             });
             consumers.clear();
@@ -215,6 +244,7 @@ public final class MaterialMeshes {
             private int red = 255, green = 255, blue = 255, alpha = 255;
             private int overlay = OverlayTexture.NO_OVERLAY, light;
             private boolean defaultColor;
+            private boolean invalidNormals;
 
             @Override public VertexConsumer vertex(double x, double y, double z) {
                 this.x = (float) x; this.y = (float) y; this.z = (float) z; return this;
@@ -230,14 +260,39 @@ public final class MaterialMeshes {
                 nx = x; ny = y; nz = z; return this;
             }
             @Override public void endVertex() {
-                if (++count > MAX_VERTICES || !Float.isFinite(x + y + z + u + v + nx + ny + nz)
+                if (++count > MAX_VERTICES || !Float.isFinite(x + y + z + u + v)
                         || Math.max(Math.abs(x), Math.max(Math.abs(y), Math.abs(z))) > 16) {
                     throw new UnsupportedOperationException("Appearance exceeds vertex/coordinate budget");
                 }
+                invalidNormals |= !Float.isFinite(nx + ny + nz);
                 vertices.add(new StaticMesh.Vertex(x, y, z, red, green, blue, alpha,
                         u, v, overlay, light, nx, ny, nz));
-                AABB point = new AABB(x, y, z, x, y, z);
-                bounds = bounds == null ? point : bounds.minmax(point);
+            }
+            private List<StaticMesh.Vertex> finish(RenderType type) {
+                if (!invalidNormals) return vertices;
+                if (type.mode() != com.mojang.blaze3d.vertex.VertexFormat.Mode.QUADS)
+                    throw new UnsupportedOperationException("Non-finite appearance normal");
+                List<StaticMesh.Vertex> result = new ArrayList<>(vertices.size());
+                for (int start = 0; start < vertices.size(); start += 4) {
+                    List<StaticMesh.Vertex> quad = vertices.subList(start, start + 4);
+                    if (quad.stream().allMatch(vertex -> Float.isFinite(vertex.nx() + vertex.ny() + vertex.nz()))) {
+                        result.addAll(quad);
+                        continue;
+                    }
+                    // Zero-scale animation bones have singular normal matrices, not invalid positions.
+                    var a = quad.get(0); var b = quad.get(1); var c = quad.get(2); var d = quad.get(3);
+                    Vector3f normal = new Vector3f(c.x() - a.x(), c.y() - a.y(), c.z() - a.z())
+                            .cross(d.x() - b.x(), d.y() - b.y(), d.z() - b.z());
+                    if (normal.lengthSquared() == 0) continue;
+                    normal.normalize();
+                    for (StaticMesh.Vertex vertex : quad) {
+                        result.add(new StaticMesh.Vertex(vertex.x(), vertex.y(), vertex.z(),
+                                vertex.red(), vertex.green(), vertex.blue(), vertex.alpha(),
+                                vertex.u(), vertex.v(), vertex.overlay(), vertex.light(),
+                                normal.x, normal.y, normal.z));
+                    }
+                }
+                return result;
             }
             @Override public void defaultColor(int r, int g, int b, int a) {
                 red = r; green = g; blue = b; alpha = a; defaultColor = true;

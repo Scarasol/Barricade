@@ -28,6 +28,7 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.client.RenderTypeGroup;
 import net.minecraftforge.client.model.data.ModelData;
 import org.junit.jupiter.api.Test;
@@ -128,6 +129,85 @@ class MaterialMeshesTest {
                 type -> RenderType.entitySolid(TEXTURE))) {
             assertEquals(8, vertices(mesh));
             assertEquals(2, mesh.batches.size());
+            assertEquals(1, mesh.bakedBatches.size(), "Live embedding must not replay the BER snapshot");
+            assertEquals(4, mesh.bakedBatches.get(0).vertices.size());
+        } finally {
+            memory.reset();
+        }
+    }
+
+    @Test
+    void multipartRendererOwnershipIsCheckedInTheLocalSamplingContext() {
+        var memory = MemoryFixture.create(true);
+        AtomicInteger rendered = new AtomicInteger();
+        var renderer = entities(new BlockEntityRenderer<BlockEntity>() {
+            @Override public boolean shouldRender(BlockEntity entity, Vec3 camera) {
+                assertEquals(Vec3.atCenterOf(entity.getBlockPos()), camera);
+                return entity.getBlockPos().getX() == 0;
+            }
+
+            @Override public void render(BlockEntity entity, float tick, PoseStack pose,
+                    MultiBufferSource buffers, int light, int overlay) {
+                rendered.incrementAndGet();
+                quad(buffers.getBuffer(RenderType.entityCutout(TEXTURE)), pose);
+            }
+        });
+        try (StaticMesh mesh = MaterialMeshes.capture(List.of(
+                new ModelPart("minecraft:chest", 0, 0, 0),
+                new ModelPart("minecraft:chest", 1, 0, 0)), memory, blocks(), renderer,
+                type -> RenderType.entitySolid(TEXTURE))) {
+            assertEquals(1, rendered.get());
+            assertEquals(4, vertices(mesh));
+            assertEquals(1, mesh.bounds.maxX);
+        } finally {
+            memory.reset();
+        }
+    }
+
+    @Test
+    void aNonOwningAuxiliaryRendererDoesNotHideTheBakedBody() {
+        var memory = MemoryFixture.create(true);
+        var renderer = entities(new BlockEntityRenderer<BlockEntity>() {
+            @Override public boolean shouldRender(BlockEntity entity, Vec3 camera) { return false; }
+
+            @Override public void render(BlockEntity entity, float tick, PoseStack pose,
+                    MultiBufferSource buffers, int light, int overlay) {
+                fail("A non-owning renderer must not be invoked");
+            }
+        });
+        try (StaticMesh mesh = MaterialMeshes.capture(List.of(new ModelPart("minecraft:barrel", 0, 0, 0)),
+                memory, blocks(), renderer, type -> RenderType.entitySolid(TEXTURE))) {
+            assertEquals(4, vertices(mesh));
+        } finally {
+            memory.reset();
+        }
+    }
+
+    @Test
+    void nativeRendererCanLookUpTheCaptureBufferAndExceptionsDoNotLeakIt() {
+        var memory = MemoryFixture.create(true);
+        var renderer = entities((entity, tick, pose, buffers, light, overlay) -> {
+            assertEquals(0, tick);
+            assertSame(buffers, CaptureBuffers.current());
+            quad(CaptureBuffers.current().getBuffer(RenderType.entityCutout(TEXTURE)), pose);
+        });
+        assertNull(CaptureBuffers.current());
+        try (StaticMesh mesh = MaterialMeshes.capture(List.of(new ModelPart("minecraft:chest", 0, 0, 0)),
+                memory, blocks(), renderer, type -> RenderType.entitySolid(TEXTURE))) {
+            assertEquals(4, vertices(mesh));
+            assertNull(CaptureBuffers.current());
+        } finally {
+            memory.reset();
+        }
+        try {
+            var error = assertThrows(IllegalStateException.class, () -> MaterialMeshes.capture(
+                    List.of(new ModelPart("minecraft:chest", 0, 0, 0)), memory, blocks(),
+                    entities((entity, tick, pose, buffers, light, overlay) -> {
+                        assertSame(buffers, CaptureBuffers.current());
+                        throw new IllegalStateException("renderer failure");
+                    }), type -> RenderType.entitySolid(TEXTURE)));
+            assertEquals("renderer failure", error.getMessage());
+            assertNull(CaptureBuffers.current());
         } finally {
             memory.reset();
         }

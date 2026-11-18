@@ -15,7 +15,7 @@ public final class SpatialField {
     private final FieldDefinition definition;
     private final List<PileModel> models;
     private final Function<FieldBatch, int[]> gpu;
-    private final int side;
+    private final int side, reach, geometryHalo;
     private final Layer skeleton, interiors;
     private long jobs, vertices, hits, prepared, prepareNanos, gpuWaitNanos, peakBytes;
     private record Packed(List<RegionPiece> pieces, List<OrientedBox> guards) { }
@@ -57,8 +57,11 @@ public final class SpatialField {
         this.models = models.stream().sorted(Comparator.comparing(PileModel::id)).toList();
         if (models.isEmpty()) throw new IllegalArgumentException("No supported materials in frozen palette");
         for (PileModel model : models)
-            if (model.span().length() * 1.05f / 2 > 5)
+            if (model.span().length() * 1.05f / 2 > FieldRules.MAX_MODEL_RADIUS)
                 throw new FieldBatch.CapacityException("Sample geometry exceeds packing capacity: " + model.id());
+        reach = Math.max(1, (int) Math.ceil(models.stream()
+                .mapToDouble(model -> model.span().length() * 1.05f / 2).max().orElse(0)));
+        geometryHalo = Math.max(1, (reach + side - 1) / side);
         geometry = fingerprint(this.models);
         skeleton = new Layer("skeleton", skeletonSide, skeletonOffset, 1,
                 this.models.stream().filter(model -> model.elongated() || model.bulk()).toList());
@@ -93,7 +96,7 @@ public final class SpatialField {
         skeleton.complete.keySet().removeIf(block -> near(block, coarseChanged, 1));
         Set<GridPos> affected = new HashSet<>(changed);
         interiors.complete.keySet().removeIf(block -> {
-            int radius = (2 * skeleton.side + side - 1) / side;
+            int radius = (2 * skeleton.side + reach + side - 1) / side;
             if (!near(block, changed, radius)) return false;
             affected.add(block); return true;
         });
@@ -128,14 +131,19 @@ public final class SpatialField {
         try {
             baseline(baseline);
             Set<GridPos> targets = new TreeSet<>(), coarse = new TreeSet<>();
-            for (BlockPos cell : domain)
+            for (BlockPos cell : domain) {
+                GridPos lo = interiors.region(cell.offset(-reach, -reach, -reach));
+                GridPos hi = interiors.region(cell.offset(reach, reach, reach));
+                for (int x = lo.x(); x <= hi.x(); x++) for (int y = lo.y(); y <= hi.y(); y++)
+                    for (int z = lo.z(); z <= hi.z(); z++) {
+                        GridPos block = new GridPos(x, y, z);
+                        if (interiors.basis.containsKey(block)) targets.add(block);
+                    }
                 for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) {
-                    BlockPos near = cell.offset(x, y, z);
-                    GridPos block = interiors.region(near);
-                    if (interiors.basis.containsKey(block)) targets.add(block);
-                    GridPos parent = skeleton.region(near);
+                    GridPos parent = skeleton.region(cell.offset(x, y, z));
                     if (skeleton.basis.containsKey(parent)) coarse.add(parent);
                 }
+            }
             Set<GridPos> needed = new TreeSet<>(coarse);
             targets.forEach(block -> needed.addAll(parents(block)));
             build(skeleton, needed);
@@ -158,8 +166,9 @@ public final class SpatialField {
     }
     private Set<GridPos> parents(GridPos block) {
         GridPos origin = interiors.origin(block);
-        GridPos lo = skeleton.region(new BlockPos(origin.x(), origin.y(), origin.z()));
-        GridPos hi = skeleton.region(new BlockPos(origin.x() + side - 1, origin.y() + side - 1, origin.z() + side - 1));
+        GridPos lo = skeleton.region(new BlockPos(origin.x() - reach, origin.y() - reach, origin.z() - reach));
+        GridPos hi = skeleton.region(new BlockPos(origin.x() + side - 1 + reach,
+                origin.y() + side - 1 + reach, origin.z() + side - 1 + reach));
         Set<GridPos> result = new TreeSet<>();
         for (int x = lo.x(); x <= hi.x(); x++) for (int y = lo.y(); y <= hi.y(); y++) for (int z = lo.z(); z <= hi.z(); z++) {
             GridPos other = new GridPos(x, y, z);
@@ -179,12 +188,12 @@ public final class SpatialField {
                 for (FieldObject object : answer.objects)
                     for (OrientedBox box : object.piece().colliders(object.owner().getX() - origin.x(),
                             object.owner().getY() - origin.y(), object.owner().getZ() - origin.z()))
-                        if (overlaps(box, layer.side)) solid.add(box);
+                        if (overlaps(box, layer.side, reach)) solid.add(box);
                 GridPos coarseOrigin = skeleton.origin(parent);
                 for (OrientedBox ray : answer.guards) {
                     OrientedBox relative = ray.translated(coarseOrigin.x() - origin.x(), coarseOrigin.y() - origin.y(),
                             coarseOrigin.z() - origin.z());
-                    if (overlaps(relative, layer.side)) rays.add(relative);
+                    if (overlaps(relative, layer.side, reach)) rays.add(relative);
                 }
             }
             bodies.put(block, solid); guards.put(block, rays);
@@ -192,13 +201,13 @@ public final class SpatialField {
         packMany(layer, pending, bodies, guards).forEach((block, packed) ->
                 layer.complete.put(block, new Answer(objects(layer, block, packed.pieces, namespace(layer, block)), packed.guards)));
     }
-    private static boolean overlaps(OrientedBox box, int side) {
-        return box.maxX() >= 0 && box.maxY() >= 0 && box.maxZ() >= 0
-                && box.minX() <= side && box.minY() <= side && box.minZ() <= side;
+    private static boolean overlaps(OrientedBox box, int side, int reach) {
+        return box.maxX() >= -reach && box.maxY() >= -reach && box.maxZ() >= -reach
+                && box.minX() <= side + reach && box.minY() <= side + reach && box.minZ() <= side + reach;
     }
     private Set<GridPos> geometryDomain(Layer layer, GridPos block) {
         Set<GridPos> result = new HashSet<>();
-        visit(block, 1, other -> {
+        visit(block, layer == interiors ? geometryHalo : 1, other -> {
             for (GridPos cell : layer.basis.getOrDefault(other, Set.of()))
                 result.add(new GridPos((other.x() - block.x()) * layer.side + cell.x(),
                         (other.y() - block.y()) * layer.side + cell.y(), (other.z() - block.z()) * layer.side + cell.z()));
@@ -226,7 +235,10 @@ public final class SpatialField {
                     GridPos block = group.get(i); long start = System.nanoTime();
                     plans[i] = PackingBatch.prepare(new PackingInput(blockSeed(layer, block), generation, domains.get(block),
                             layer.models, result.get(block).pieces, obstacles.get(block), layer.side, true, layer.basis.get(block),
-                            guards.get(block)), models, 225);
+                            guards.get(block)), models, 225, layer == interiors ? 1 : 0);
+                    // Keep normal continuation unchanged; rank only on its stopping or final pass.
+                    if (generation + 1 < layer.passes)
+                        plans[i].input[22] = plans[i].initial[4] + Math.max(1, plans[i].input[7] / 2);
                     preparation[i] = System.nanoTime() - start;
                 });
                 int from = 0;
@@ -251,7 +263,7 @@ public final class SpatialField {
                         boolean incomplete = state[4] < plan.input[7] * 80;
                         for (int owner = 0; owner < plan.input[7]; owner++)
                             incomplete |= state[state[12] + owner] < 44;
-                        if (state[0] != 0 && incomplete
+                        if (state[0] != 0 && state[24] == 0 && incomplete
                                 && state[4] - plan.initial[4] >= Math.max(1, layer.basis.get(block).size() / 2)) next.add(block);
                     }
                     from = to;
@@ -287,7 +299,7 @@ public final class SpatialField {
         StringBuilder result = new StringBuilder(layer.name).append(':').append(geometry).append(':').append(layer.side)
                 .append(':').append(layer.offset);
         Set<GridPos> local = new TreeSet<>();
-        visit(block, 1, other -> { if (layer.basis.containsKey(other)) local.add(other); });
+        visit(block, layer == interiors ? geometryHalo : 1, other -> { if (layer.basis.containsKey(other)) local.add(other); });
         appendInputs(result, layer, local, layer.origin(block));
         if (layer == interiors) {
             Set<GridPos> coarse = new TreeSet<>();

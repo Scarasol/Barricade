@@ -20,7 +20,7 @@ public final class BarricadeBlock extends Block {
     private static final VoxelShape COLLISION_SHAPE = Block.box(0, 0, 0, 16, 24, 16);
 
     public BarricadeBlock() {
-        super(Properties.of().mapColor(MapColor.WOOD).strength(2.5f, 5.0f).sound(SoundType.WOOD)
+        super(Properties.of().mapColor(MapColor.WOOD).strength(2.5f, 8.0f).sound(SoundType.WOOD)
                 .pushReaction(PushReaction.BLOCK)
                 .noOcclusion().isSuffocating((state, level, pos) -> false)
                 .isViewBlocking((state, level, pos) -> false));

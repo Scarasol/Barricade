@@ -104,6 +104,22 @@ class WindowBoardsCollisionTest {
         registry.bindTags(selected);
     }
 
+    @Test void reinforcedSealsKeepHigherHardnessButMatchVanillaBlastResistanceAndToolRequirements() {
+        var level = MemoryFixture.create(false);
+        var wood = boards.defaultBlockState();
+        var iron = bars.defaultBlockState();
+        assertEquals(3, wood.getDestroySpeed(level, POS));
+        assertEquals(3, boards.getExplosionResistance());
+        assertTrue(wood.getDestroySpeed(level, POS) > Blocks.OAK_PLANKS.defaultBlockState().getDestroySpeed(level, POS));
+        assertEquals(Blocks.OAK_PLANKS.getExplosionResistance(), boards.getExplosionResistance());
+        assertFalse(wood.requiresCorrectToolForDrops());
+        assertEquals(6, iron.getDestroySpeed(level, POS));
+        assertEquals(6, bars.getExplosionResistance());
+        assertTrue(iron.getDestroySpeed(level, POS) > Blocks.IRON_BARS.defaultBlockState().getDestroySpeed(level, POS));
+        assertEquals(Blocks.IRON_BARS.getExplosionResistance(), bars.getExplosionResistance());
+        assertTrue(iron.requiresCorrectToolForDrops());
+    }
+
     @Test void filteringKeepsOutlinesAndContextFreePanelsOnBothSidesAndAllSixFacings() {
         for (boolean client : new boolean[]{false, true}) {
             var level = MemoryFixture.create(client);

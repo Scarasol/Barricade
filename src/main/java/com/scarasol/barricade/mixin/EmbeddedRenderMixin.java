@@ -21,6 +21,10 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.world.phys.AABB;
 
 @Mixin(BlockRenderDispatcher.class)
 abstract class EmbeddedRenderMixin {
@@ -54,6 +58,18 @@ abstract class EmbeddedBlockEntityRenderMixin {
     private void barricade$suppressEmbeddedEntity(BlockEntity entity, float partialTick, PoseStack pose,
                                                   net.minecraft.client.renderer.MultiBufferSource buffers,
                                                   CallbackInfo callback) {
-        if (BarricadeRenderer.suppressOriginal(entity.getBlockPos())) callback.cancel();
+        if (BarricadeRenderer.renderEmbeddedEntity(entity, partialTick, pose, buffers)
+                || BarricadeRenderer.suppressOriginal(entity.getBlockPos())) callback.cancel();
+    }
+}
+
+@Mixin(LevelRenderer.class)
+abstract class EmbeddedBlockEntityBoundsMixin {
+    @WrapOperation(method = "renderLevel", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/level/block/entity/BlockEntity;getRenderBoundingBox()Lnet/minecraft/world/phys/AABB;",
+            remap = false))
+    private AABB barricade$animatedBounds(BlockEntity entity, Operation<AABB> original) {
+        AABB bounds = BarricadeRenderer.embeddedRenderBounds(entity);
+        return bounds == null ? original.call(entity) : bounds;
     }
 }

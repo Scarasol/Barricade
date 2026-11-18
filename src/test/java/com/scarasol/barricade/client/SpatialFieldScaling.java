@@ -4,7 +4,9 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.google.gson.*;
 import com.scarasol.barricade.pile.*;
 import com.scarasol.barricade.recipe.*;
+import java.io.*;
 import java.nio.file.*;
+import java.security.*;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
@@ -55,12 +57,15 @@ final class SpatialFieldScaling {
                 row.addProperty("side", side); row.addProperty("cells", domain.size());
                 row.addProperty("skeleton_side", grid[1]); row.addProperty("skeleton_offset", grid[2]);
                 row.add("origin", new Gson().toJsonTree(coordinates));
-                long device = worker.deviceNanos(), start = System.nanoTime();
+                long device = worker.deviceNanos(), dispatches = worker.dispatches(), start = System.nanoTime();
                 List<FieldObject> objects = query(worker, field, domain);
                 double wall = (System.nanoTime() - start) / 1e6;
                 row.addProperty("cold_ms", wall);
                 row.addProperty("device_ms", (worker.deviceNanos() - device) / 1e6);
+                row.addProperty("dispatches", worker.dispatches() - dispatches);
+                row.addProperty("cpu_preparation_ms", field.metrics().prepareNanos() / 1e6);
                 row.addProperty("objects", objects.size());
+                row.addProperty("layout_digest", digest(objects));
                 row.add("metrics", new Gson().toJsonTree(field.metrics()));
                 JsonArray regions = new JsonArray();
                 double[] perRegion = field.regionTimings().stream().mapToDouble(time ->
@@ -92,6 +97,21 @@ final class SpatialFieldScaling {
         }
         if (saved != null) assertArrayEquals(saved, Files.readAllBytes(save));
         if (samples != null) assertArrayEquals(samples, Files.readAllBytes(cache));
+    }
+    private static String digest(List<FieldObject> objects) throws IOException, NoSuchAlgorithmException {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (var output = new DataOutputStream(new DigestOutputStream(OutputStream.nullOutputStream(), digest))) {
+            for (FieldObject object : objects) {
+                output.writeUTF(object.key().toString());
+                output.writeInt(object.owner().getX()); output.writeInt(object.owner().getY()); output.writeInt(object.owner().getZ());
+                PilePiece piece = object.piece();
+                output.writeUTF(piece.model().id());
+                output.writeFloat(piece.x()); output.writeFloat(piece.y()); output.writeFloat(piece.z());
+                output.writeFloat(piece.scale());
+                output.writeFloat(piece.qx()); output.writeFloat(piece.qy()); output.writeFloat(piece.qz()); output.writeFloat(piece.qw());
+            }
+        }
+        return HexFormat.of().formatHex(digest.digest());
     }
     private static void write(JsonArray rows, int rounds, double initializedMs) throws Exception {
         JsonObject report = new JsonObject();

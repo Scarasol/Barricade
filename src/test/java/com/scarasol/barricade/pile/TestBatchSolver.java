@@ -31,6 +31,9 @@ public final class TestBatchSolver {
             interrupted();
             kernel.apply(phase, round);
         }
+        for (int id = 0; id < input[11]; id++) kernel.rankCandidate(id);
+        for (int owner = 0; owner < input[7]; owner++) kernel.rankOwner(owner);
+        kernel.retainObject();
         return state;
     }
 
