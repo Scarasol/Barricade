@@ -5,8 +5,20 @@
   "compatibilityLevel": "JAVA_17",
   "refmap": "barricade.refmap.json",
   "plugin": "com.scarasol.barricade.mixin.plugin.MixinPlugin",
-  "mixins": ["BlockItemSamplingMixin", "EmbeddedStateMixin", "WindowBoardsArrowMixin"],
-  "client": ["CompositeTypeAccess", "CompositeStateAccess", "RenderTypeAccess", "EmbeddedRenderMixin", "EmbeddedFaceMixin", "EmbeddedBlockEntityRenderMixin", "EmbeddedBlockEntityBoundsMixin", "EmbeddedBlockEntityUpdateMixin", "WindowBoardsClientLevelMixin", "WindowBoardsClientChunksMixin", "WindowBoardsAttackMixin", "bettercombat.WindowBoardsBetterCombatAttackMixin", "bettercombat.WindowBoardsRadialFilterMixin", "tacz.CaptureBufferMixin", "sbm.CaptureCullingMixin"],
+  "mixins": [
+    "BlockItemSamplingMixin", "EmbeddedStateMixin", "EmbeddedCollisionMixin",
+    "EmbeddedBlockCollisionsMixin", "EmbeddedNavigationRegionMixin", "WindowBoardsArrowMixin",
+    "ArrowLightsMixin", "ProjectileTraceMixin", "ProjectileImpactMixin", "LightStructureMixin",
+    "tacz.TaczLightsMixin", "superbwarfare.SuperbLightsMixin"
+  ],
+  "client": [
+    "CompositeTypeAccess", "CompositeStateAccess", "RenderTypeAccess", "EmbeddedRenderMixin",
+    "EmbeddedFaceMixin", "EmbeddedBlockEntityRenderMixin", "EmbeddedBlockEntityBoundsMixin",
+    "EmbeddedBlockEntityUpdateMixin", "WindowBoardsClientLevelMixin", "WindowBoardsClientChunksMixin",
+    "WindowBoardsAttackMixin", "bettercombat.WindowBoardsBetterCombatAttackMixin",
+    "bettercombat.WindowBoardsRadialFilterMixin", "tacz.CaptureBufferMixin", "simplebedrockmodel.CaptureCullingMixin",
+    "ClientBulbPickMixin", "ClientLightUpdateMixin", "EmbeddedClientCollisionMixin", "EmbeddedOutlineMixin"
+  ],
   "injectors": {
     "defaultRequire": 1
   }

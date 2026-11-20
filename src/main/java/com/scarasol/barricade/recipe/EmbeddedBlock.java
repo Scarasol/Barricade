@@ -27,7 +27,7 @@ public record EmbeddedBlock(BlockPos pos, long instance, long revision) {
         var entity = level.getBlockEntity(pos);
         CompoundTag data = entity == null ? new CompoundTag() : entity.saveWithoutMetadata();
         List<CollisionBox> boxes = new ArrayList<>();
-        state.getCollisionShape(level, pos, CollisionContext.empty()).toAabbs().stream().limit(16).forEach(box ->
+        state.getBlock().getCollisionShape(state, level, pos, CollisionContext.empty()).toAabbs().stream().limit(16).forEach(box ->
                 boxes.add(new CollisionBox((float) box.minX, (float) box.minY, (float) box.minZ,
                         (float) box.maxX, (float) box.maxY, (float) box.maxZ)));
         if (boxes.isEmpty()) boxes.add(CollisionBox.CUBE);

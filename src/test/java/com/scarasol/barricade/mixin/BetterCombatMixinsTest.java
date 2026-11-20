@@ -3,39 +3,20 @@ package com.scarasol.barricade.mixin;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonParser;
-import com.scarasol.barricade.mixin.plugin.MixinPlugin;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.tree.*;
-import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
 
 class BetterCombatMixinsTest {
-    private static final String PREFIX = "com.scarasol.barricade.mixin.bettercombat.";
-
-    @Test void pluginEnablesOnlyInstalledCompatibilityWithoutInitializingTheOptionalMod() throws Exception {
-        var plugin = new MixinPlugin();
-        plugin.onLoad("com.scarasol.barricade.mixin");
-        assertTrue(plugin.shouldApplyMixin("anything", PREFIX + "WindowBoardsBetterCombatAttackMixin"));
-        assertTrue(plugin.shouldApplyMixin("anything", PREFIX + "WindowBoardsRadialFilterMixin"));
-        assertTrue(plugin.shouldApplyMixin("anything", "com.scarasol.barricade.mixin.WindowBoardsAttackMixin"));
-        var detection = method(bytecode("com/scarasol/barricade/mixin/plugin/MixinPlugin"), "present");
-        var call = calls(detection).stream().filter(node -> node.owner.equals("java/lang/Class")
-                && node.name.equals("forName")).findFirst().orElseThrow();
-        assertEquals("(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;", call.desc);
-        assertTrue(calls(method(bytecode("com/scarasol/barricade/mixin/plugin/MixinPlugin"), "shouldApplyMixin"))
-                .stream().noneMatch(node -> node.owner.equals("java/lang/Class")));
-    }
-
-    @Test void absentBetterCombatSkipsBothMixinsAndLeavesTheNativeAttackHelperLoadable() throws Exception {
+    @Test void absentBetterCombatLeavesTheNativeAttackHelperLoadable() {
         var loader = new ClassLoader(getClass().getClassLoader()) {
             @Override protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
                 if (name.startsWith("net.bettercombat.") || name.startsWith("dev.kosmx.")
                         || name.startsWith("me.shedaniel.")) throw new ClassNotFoundException(name);
-                if (!name.equals("com.scarasol.barricade.mixin.plugin.MixinPlugin")
-                        && !name.startsWith("com.scarasol.barricade.window.WindowBoardsAttack"))
+                if (!name.startsWith("com.scarasol.barricade.window.WindowBoardsAttack"))
                     return super.loadClass(name, resolve);
                 synchronized (getClassLoadingLock(name)) {
                     var loaded = findLoadedClass(name);
@@ -52,12 +33,6 @@ class BetterCombatMixinsTest {
                 }
             }
         };
-        var plugin = (IMixinConfigPlugin) loader.loadClass("com.scarasol.barricade.mixin.plugin.MixinPlugin")
-                .getConstructor().newInstance();
-        plugin.onLoad("com.scarasol.barricade.mixin");
-        assertFalse(plugin.shouldApplyMixin("anything", PREFIX + "WindowBoardsBetterCombatAttackMixin"));
-        assertFalse(plugin.shouldApplyMixin("anything", PREFIX + "WindowBoardsRadialFilterMixin"));
-        assertTrue(plugin.shouldApplyMixin("anything", "com.scarasol.barricade.mixin.WindowBoardsAttackMixin"));
         assertDoesNotThrow(() -> Class.forName("com.scarasol.barricade.window.WindowBoardsAttack", true, loader)
                 .getDeclaredMethods());
     }

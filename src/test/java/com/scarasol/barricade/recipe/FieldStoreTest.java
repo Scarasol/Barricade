@@ -22,6 +22,10 @@ class FieldStoreTest {
     private FieldRegion region(long revision, Set<BlockPos> domain) {
         return new FieldRegion(ID, revision, FieldDefinition.create(42, palette), domain, new SpatialMask(), Map.of());
     }
+    private FieldRegion embeddedRegion(long revision, BlockPos pos) {
+        return new FieldRegion(ID, revision, FieldDefinition.create(42, palette), Set.of(pos),
+                new SpatialMask(), Map.of(pos, new EmbeddedBlock(pos, 1, revision)));
+    }
     @Test void fullBaselinesAndCurrentDeltasAreAtomicAndStaleRevisionsCannotUndoThePresent() {
         FieldStore store = new FieldStore();
         var one = region(1, Set.of(BlockPos.ZERO));
@@ -37,6 +41,21 @@ class FieldStoreTest {
         id.putUUID("Id", ID); ListTag removed = new ListTag(); removed.add(id); removal.put("Removed", removed);
         store.accept(removal); assertTrue(store.regions().isEmpty());
         store.accept(payload(-1, 20, one)); assertEquals(one, store.regions().get(ID));
+    }
+    @Test void embeddedPositionIndexTracksAtomicBaselinesAndRemovals() {
+        FieldStore store = new FieldStore();
+        BlockPos pos = BlockPos.ZERO;
+        var embedded = embeddedRegion(1, pos);
+        store.accept(payload(-1, 10, embedded));
+        assertEquals(embedded.embedded().get(pos), store.embeddedAt(pos));
+
+        store.accept(payload(10, 11, region(2, Set.of(pos))));
+        assertNull(store.embeddedAt(pos));
+
+        CompoundTag removal = payload(11, 12, null), id = new CompoundTag();
+        id.putUUID("Id", ID); ListTag removed = new ListTag(); removed.add(id); removal.put("Removed", removed);
+        store.accept(removal);
+        assertNull(store.embeddedAt(pos));
     }
     @Test void paletteContentIsCanonicalAndFrozenAcrossTagChanges() {
         var a = new PileModels.Candidate("a", "minecraft:stone", 1);

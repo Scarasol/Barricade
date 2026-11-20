@@ -1,4 +1,4 @@
-package com.scarasol.barricade.mixin.sbm;
+package com.scarasol.barricade.mixin.simplebedrockmodel;
 
 import com.scarasol.barricade.client.CaptureBuffers;
 import org.spongepowered.asm.mixin.Mixin;

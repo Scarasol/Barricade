@@ -6,6 +6,7 @@ import com.scarasol.barricade.recipe.*;
 import com.scarasol.barricade.sampling.MemoryFixture;
 import com.scarasol.barricade.sampling.MemoryLevel;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import net.minecraft.core.BlockPos;
@@ -64,7 +65,8 @@ class FieldEmbeddingTest {
         var base = List.of(inside, clear);
         try (var mesh = VisualMeshFixture.box(new AABB(0, 0, 0, 1, 8, 1))) {
             AtomicInteger captures = new AtomicInteger();
-            var terrain = new TerrainShapes(memory, ignored -> true, ignored -> {
+            var terrain = new TerrainShapes(memory, ignored -> true, captured -> {
+                if (!captured.id().startsWith("embedded:")) return VisualMeshFixture.collisionProxy(captured);
                 captures.incrementAndGet();
                 return mesh;
             });
@@ -73,7 +75,7 @@ class FieldEmbeddingTest {
             assertEquals(List.of(clear), during.visible());
             var alone = new FieldOverlay(source, 1, List.of(inside), List.of(source, host));
             assertTrue(alone.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
-            assertEquals(List.of(inside), alone.visible(), "Existing nonempty fallback still applies");
+            assertTrue(alone.visible().isEmpty(), "An embedded conflict must not be restored as a fallback");
             var restored = new FieldOverlay(source, 2, base, List.of(source, region(2, Set.of(pos), Map.of())));
             assertTrue(restored.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
             assertEquals(base, restored.visible());
@@ -86,7 +88,7 @@ class FieldEmbeddingTest {
         }
     }
 
-    @Test void wholeEmbeddedEnvelopeIncludesTheSpaceBetweenLegsAndOnlyFallsBackWithoutAnAlternative() {
+    @Test void spaceBetweenEmbeddedLegsRemainsVisible() {
         BlockPos pos = new BlockPos(-17, -60, -1);
         var memory = MemoryFixture.create(false);
         memory.context(Map.of(pos, Blocks.FURNACE.defaultBlockState()), Map.of());
@@ -94,6 +96,7 @@ class FieldEmbeddingTest {
         var visual = embedded.transform(embedded.model(memory));
         var small = object(pos, pos.east(), 0, cube(.2f), visual.transformPoint(.5f, .5f, .5f), visual.rotation());
         var clear = object(pos, pos.east(), 1, cube(.2f), new Vector3f(2.5f, .5f, .5f), new Quaternionf());
+        var crossesTop = object(pos, pos.east(), 2, cube(.2f), visual.transformPoint(.5f, .85f, .5f), visual.rotation());
         var during = region(1, Set.of(pos, pos.east(2)), Map.of(pos, embedded));
         try (StaticMesh frame = VisualMeshFixture.boxes(
                 new CollisionBox(0, .85f, 0, 1, 1, 1),
@@ -103,14 +106,14 @@ class FieldEmbeddingTest {
                     ? frame : VisualMeshFixture.collisionProxy(model);
             assertTrue(FieldVisibility.centerInside(small,
                     new FieldVisibility.Shape(pos, visual.colliders(0, 0, 0), true)));
-            assertEquals(List.of(clear), display(during, List.of(small, clear), memory, List.of(during), meshes),
-                    "The table's empty middle is still inside its one whole-model box");
-            assertEquals(List.of(small), display(during, List.of(small), memory, List.of(during), meshes));
+            assertEquals(List.of(small, clear),
+                    display(during, List.of(small, clear, crossesTop), memory, List.of(during), meshes));
+            assertTrue(display(during, List.of(crossesTop), memory, List.of(during), meshes).isEmpty());
             assertEquals(0, memory.chunkRequests());
         }
     }
 
-    @Test void wholePileEnvelopeDoesNotInspectSeparateLegsOrFaces() {
+    @Test void aPilePieceAlsoKeepsItsEmptySpaceAroundAnEmbeddedObject() {
         BlockPos pos = BlockPos.ZERO;
         var memory = MemoryFixture.create(false);
         memory.context(Map.of(pos, Blocks.FURNACE.defaultBlockState()), Map.of());
@@ -129,14 +132,77 @@ class FieldEmbeddingTest {
                 captures.incrementAndGet();
                 return model.id().startsWith("embedded:") ? small : frame;
             };
-            assertEquals(List.of(clear), display(during, List.of(furniture, clear), memory, List.of(during), meshes));
-            assertEquals(List.of(furniture), display(during, List.of(furniture), memory, List.of(during), meshes));
-            assertTrue(captures.get() > 0, "The overlay obtains the embedded object's whole visible envelope");
+            assertEquals(List.of(furniture, clear),
+                    display(during, List.of(furniture, clear), memory, List.of(during), meshes));
+            assertTrue(captures.get() > 1, "The overlay obtains both meshes to confirm the overlap");
             var before = region(1, during.domain(), Map.of());
             captures.set(0);
             assertEquals(List.of(furniture), display(before, List.of(furniture), memory, List.of(before), meshes));
             assertEquals(0, captures.get(), "Ordinary and cross-tag display must not pay for mesh intersection");
             assertEquals(0, memory.chunkRequests());
+        }
+    }
+
+    @Test void anEmbeddedEnvelopeSpanningTwoByTwoCellsOnlyHidesTheIntersectingPiece() {
+        BlockPos pos = new BlockPos(-17, -60, -1);
+        var memory = MemoryFixture.create(false);
+        memory.context(Map.of(pos, Blocks.FURNACE.defaultBlockState()), Map.of());
+        var embedded = new EmbeddedBlock(pos, 7, 1);
+        var pose = embedded.transform(embedded.model(memory));
+        var localCenter = pose.rotation().conjugate().transform(new Vector3f(.5f)
+                .sub(pose.x(), pose.y(), pose.z())).div(pose.scale()).add(.5f, .5f, .5f);
+        var cells = List.of(pos, pos.east(), pos.south(), pos.east().south());
+        List<FieldObject> pieces = new ArrayList<>();
+        for (int i = 0; i < cells.size(); i++) {
+            BlockPos owner = cells.get(i);
+            pieces.add(object(owner, owner, i, cube(.2f), new Vector3f(.5f), new Quaternionf()));
+        }
+        var during = region(1, Set.copyOf(cells), Map.of(pos, embedded));
+        var before = region(1, during.domain(), Map.of());
+        try (var mesh = VisualMeshFixture.boxes(
+                new CollisionBox(localCenter.x - .18f, localCenter.y - .18f, localCenter.z - .18f,
+                        localCenter.x + .18f, localCenter.y + .18f, localCenter.z + .18f),
+                new CollisionBox(-1.5f, -1.5f, -1.5f, -1.3f, -1.3f, -1.3f),
+                new CollisionBox(2.3f, 2.3f, 2.3f, 2.5f, 2.5f, 2.5f));
+             var filledEnvelope = VisualMeshFixture.box(mesh.bounds)) {
+            assertTrue(display(during, pieces, memory, List.of(during), model -> model.id().startsWith("embedded:")
+                    ? filledEnvelope : VisualMeshFixture.collisionProxy(model)).isEmpty(),
+                    "Treating the same envelope as solid would hide all four pieces");
+            Function<PileModel, StaticMesh> meshes = model -> model.id().startsWith("embedded:")
+                    ? mesh : VisualMeshFixture.collisionProxy(model);
+            assertEquals(pieces.subList(1, 4), display(during, pieces, memory, List.of(during), meshes));
+            assertEquals(pieces, display(before, pieces, memory, List.of(before), meshes));
+            assertTrue(during.mask().isEmpty());
+
+            var loaded = new AtomicBoolean(false);
+            var terrain = new TerrainShapes(memory, cell -> !cell.equals(pos) || loaded.get(), meshes);
+            try {
+                BarricadeRenderer.replace(before.id(), pieces);
+                var unloaded = new FieldOverlay(during, 1, pieces, List.of(during));
+                assertTrue(unloaded.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
+                BarricadeRenderer.replace(during.id(), unloaded.visible());
+                assertEquals(4, BarricadeRenderer.counters().objects(), "An unloaded anchor is not an obstacle");
+
+                loaded.set(true);
+                memory.reset();
+                terrain.invalidateEmbedded();
+                var awaitingState = new FieldOverlay(during, 2, pieces, List.of(during));
+                assertTrue(awaitingState.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
+                BarricadeRenderer.replace(during.id(), awaitingState.visible());
+                assertEquals(4, BarricadeRenderer.counters().objects(), "Metadata can precede the native state");
+
+                memory.context(Map.of(pos, Blocks.FURNACE.defaultBlockState()), Map.of());
+                terrain.invalidateEmbedded();
+                var synchronizedState = new FieldOverlay(during, 3, pieces, List.of(during));
+                assertTrue(synchronizedState.advance(terrain, Integer.MAX_VALUE, Long.MAX_VALUE));
+                assertEquals(pieces.subList(1, 4), synchronizedState.visible());
+                BarricadeRenderer.replace(during.id(), synchronizedState.visible());
+                assertEquals(3, BarricadeRenderer.counters().objects());
+                BarricadeRenderer.replace(before.id(), display(before, pieces, memory, List.of(before), meshes));
+                assertEquals(4, BarricadeRenderer.counters().objects());
+            } finally {
+                BarricadeRenderer.remove(before.id());
+            }
         }
     }
 
@@ -239,7 +305,8 @@ class FieldEmbeddingTest {
                 .view(Set.of(pos, pos.east()), Map.of(pos, embedded));
         assertTrue(view.penetration(shifted) < view.penetration(object));
         assertTrue(view.penetration(shifted) > 1f / 32);
-        assertEquals(List.of(shifted), display(source, List.of(object, shifted), memory, List.of(source, host)));
+        assertTrue(display(source, List.of(object, shifted), memory, List.of(source, host)).isEmpty(),
+                "A least-overlapping body must not be restored through the embedded model");
         assertEquals(List.of(clear), display(source, List.of(object, shifted, clear), memory, List.of(source, host)));
         var restoredHost = region(2, Set.of(pos), Map.of());
         assertEquals(List.of(object, shifted, clear),

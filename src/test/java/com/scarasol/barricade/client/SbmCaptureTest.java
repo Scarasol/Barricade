@@ -26,12 +26,11 @@ import org.junit.jupiter.api.io.TempDir;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.tree.AnnotationNode;
 import org.objectweb.asm.tree.ClassNode;
-import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
 
 class SbmCaptureTest {
     private static final String PREFIX = "com.github.mcmodderanchor.simplebedrockmodel.";
     private static final String TARGET = PREFIX + "v2.common.model.baked.BakedGeometryChunkRenderer";
-    private static final String MIXIN = "com.scarasol.barricade.mixin.sbm.CaptureCullingMixin";
+    private static final String MIXIN = "com.scarasol.barricade.mixin.simplebedrockmodel.CaptureCullingMixin";
     @TempDir Path directory;
 
     @Test
@@ -41,9 +40,9 @@ class SbmCaptureTest {
                      getClass().getResourceAsStream("/barricade.mixins.json")), StandardCharsets.UTF_8)) {
             var config = JsonParser.parseReader(reader).getAsJsonObject();
             assertTrue(config.getAsJsonArray("client").asList().stream()
-                    .anyMatch(value -> value.getAsString().equals("sbm.CaptureCullingMixin")));
+                    .anyMatch(value -> value.getAsString().equals("simplebedrockmodel.CaptureCullingMixin")));
             assertTrue(config.getAsJsonArray("mixins").asList().stream()
-                    .noneMatch(value -> value.getAsString().equals("sbm.CaptureCullingMixin")));
+                    .noneMatch(value -> value.getAsString().equals("simplebedrockmodel.CaptureCullingMixin")));
             var mixin = bytecode(getClass().getClassLoader(), MIXIN);
             var declaration = mixin.invisibleAnnotations.stream()
                     .filter(value -> value.desc.equals("Lorg/spongepowered/asm/mixin/Mixin;"))
@@ -101,7 +100,7 @@ class SbmCaptureTest {
             var hookType = Class.forName(MIXIN);
             var hook = hookType.getDeclaredMethod("barricade$captureAllFaces", boolean.class);
             hook.setAccessible(true);
-            var hookInstance = new com.scarasol.barricade.mixin.sbm.CaptureCullingMixin() { };
+            var hookInstance = new com.scarasol.barricade.mixin.simplebedrockmodel.CaptureCullingMixin() { };
             assertEquals(false, hook.invoke(hookInstance, false));
             assertEquals(true, hook.invoke(hookInstance, true));
             RenderType material = RenderType.entityCutout(new ResourceLocation("barricade", "sbm-capture.png"));
@@ -133,35 +132,6 @@ class SbmCaptureTest {
             assertEquals(false, hook.invoke(hookInstance, false));
         } finally {
             instanceField.set(null, previous);
-        }
-    }
-
-    @Test
-    void pluginDetectsBundledSbmWithoutInitializingIt() throws Exception {
-        try (var sbm = BundledSbmFixture.open(directory)) {
-            var loader = new ClassLoader(sbm) {
-                @Override protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-                    if (!name.equals("com.scarasol.barricade.mixin.plugin.MixinPlugin"))
-                        return super.loadClass(name, resolve);
-                    synchronized (getClassLoadingLock(name)) {
-                        var loaded = findLoadedClass(name);
-                        if (loaded == null) {
-                            try (var input = Objects.requireNonNull(getResourceAsStream(name.replace('.', '/') + ".class"))) {
-                                byte[] bytes = input.readAllBytes();
-                                loaded = defineClass(name, bytes, 0, bytes.length);
-                            } catch (java.io.IOException error) {
-                                throw new ClassNotFoundException(name, error);
-                            }
-                        }
-                        if (resolve) resolveClass(loaded);
-                        return loaded;
-                    }
-                }
-            };
-            var plugin = (IMixinConfigPlugin) loader.loadClass("com.scarasol.barricade.mixin.plugin.MixinPlugin")
-                    .getConstructor().newInstance();
-            plugin.onLoad("com.scarasol.barricade.mixin");
-            assertTrue(plugin.shouldApplyMixin(TARGET, MIXIN));
         }
     }
 

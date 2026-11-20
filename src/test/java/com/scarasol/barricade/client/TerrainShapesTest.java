@@ -14,7 +14,7 @@ import org.joml.Quaternionf;
 import org.junit.jupiter.api.Test;
 
 class TerrainShapesTest {
-    @Test void embeddedTableUsesOneWholeEnvelopeIncludingTheSpaceBetweenItsLegs() {
+    @Test void embeddedTableDoesNotSuppressPiecesInTheSpaceBetweenItsLegs() {
         var world = MemoryFixture.create(false);
         world.context(Map.of(BlockPos.ZERO, Blocks.OAK_PLANKS.defaultBlockState()), Map.of());
         var embedded = new EmbeddedBlock(BlockPos.ZERO, 7, 1);
@@ -27,8 +27,9 @@ class TerrainShapesTest {
         try (var table = VisualMeshFixture.boxes(new CollisionBox(0, .85f, 0, 1, 1, 1),
                 new CollisionBox(0, 0, 0, .1f, .85f, .1f),
                 new CollisionBox(.9f, 0, .9f, 1, .85f, 1))) {
-            var terrain = new TerrainShapes(world, ignored -> true, ignored -> table);
-            assertFalse(terrain.view(Set.of(BlockPos.ZERO), Map.of(BlockPos.ZERO, embedded)).visible(candidate));
+            var terrain = new TerrainShapes(world, ignored -> true, model -> model.id().startsWith("embedded:")
+                    ? table : VisualMeshFixture.collisionProxy(model));
+            assertTrue(terrain.view(Set.of(BlockPos.ZERO), Map.of(BlockPos.ZERO, embedded)).visible(candidate));
         }
     }
 
@@ -60,8 +61,10 @@ class TerrainShapesTest {
             AtomicInteger captures = new AtomicInteger();
             try (var tall = VisualMeshFixture.box(new AABB(0, 0, 0, 1, 8, 1));
                  var shortModel = VisualMeshFixture.boxes(CollisionBox.CUBE)) {
-                var terrain = new TerrainShapes(world, ignored -> true,
-                        ignored -> captures.incrementAndGet() == 1 ? tall : shortModel);
+                var terrain = new TerrainShapes(world, ignored -> true, captured -> {
+                    if (!captured.id().startsWith("embedded:")) return shortModel;
+                    return captures.incrementAndGet() == 1 ? tall : shortModel;
+                });
                 var view = terrain.view(logical, blocks);
                 assertFalse(view.visible(inside));
                 assertTrue(view.visible(clear), "The broad-phase AABB must not replace the rotated envelope");
@@ -101,7 +104,7 @@ class TerrainShapesTest {
         assertEquals(26, reads.get());
         TerrainShapes unknown = new TerrainShapes(world, pos -> false);
         assertTrue(unknown.view(Set.of(BlockPos.ZERO), Map.of()).visible(object));
-        assertFalse(unknown.view(Set.of(BlockPos.ZERO), Map.of(BlockPos.ZERO,
+        assertTrue(unknown.view(Set.of(BlockPos.ZERO), Map.of(BlockPos.ZERO,
                 new EmbeddedBlock(BlockPos.ZERO, 7, 1))).visible(object));
         assertEquals(0, world.chunkRequests());
     }

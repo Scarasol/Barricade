@@ -1,0 +1,12 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": ["CGC", "NRN", " G "],
+  "key": {
+    "C": {"item": "minecraft:copper_ingot"},
+    "G": {"item": "minecraft:glass"},
+    "N": {"item": "minecraft:iron_nugget"},
+    "R": {"item": "minecraft:redstone"}
+  },
+  "result": {"item": "barricade:string_light_wire", "count": 4}
+}

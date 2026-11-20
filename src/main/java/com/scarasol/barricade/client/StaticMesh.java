@@ -118,6 +118,7 @@ final class StaticMesh implements AutoCloseable {
     final AABB bounds;
     private List<Batch> surfaces;
     private List<Batch> bakedSurfaces;
+    private VisualOverlap.Geometry overlapGeometry;
 
     StaticMesh(List<Batch> batches, AABB bounds) {
         this(batches, batches, bounds);
@@ -143,6 +144,11 @@ final class StaticMesh implements AutoCloseable {
         if (bakedSurfaces == null)
             bakedSurfaces = bakedBatches.stream().flatMap(batch -> batch.surfaces().stream()).toList();
         return bakedSurfaces;
+    }
+
+    VisualOverlap.Geometry overlapGeometry() {
+        if (overlapGeometry == null) overlapGeometry = VisualOverlap.capture(this);
+        return overlapGeometry;
     }
 
     @Override public void close() {

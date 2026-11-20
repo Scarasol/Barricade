@@ -1,15 +1,18 @@
 package com.scarasol.barricade.recipe;
 
 import java.util.*;
+import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.*;
 
 /** Atomic current-state revision stream. A missed baseline is an error, not a replay request. */
 public final class FieldStore {
     private Map<UUID, FieldRegion> regions = Map.of();
     private Map<String, PaletteSpec> palettes = Map.of();
+    private Map<BlockPos, EmbeddedBlock> embedded = Map.of();
     private long revision = -1, samples;
     public Map<UUID, FieldRegion> regions() { return regions; }
     public PaletteSpec palette(String id) { return palettes.get(id); }
+    public EmbeddedBlock embeddedAt(BlockPos pos) { return embedded.get(pos); }
     public long samples() { return samples; }
     public long revision() { return revision; }
     public void accept(CompoundTag payload) {
@@ -34,14 +37,16 @@ public final class FieldStore {
             groups.put(region.id(), region);
         }
         Set<String> live = new HashSet<>();
-        Set<net.minecraft.core.BlockPos> cells = new HashSet<>();
+        Set<BlockPos> cells = new HashSet<>();
+        Map<BlockPos, EmbeddedBlock> embeddedBlocks = new HashMap<>();
         for (FieldRegion region : groups.values()) {
             if (!rules.containsKey(region.definition().palette())) throw new IllegalArgumentException("Missing field palette");
             for (var pos : region.domain()) if (!cells.add(pos)) throw new IllegalArgumentException("Overlapping field regions");
+            embeddedBlocks.putAll(region.embedded());
             live.add(region.definition().palette());
         }
         rules.keySet().retainAll(live);
-        regions = Map.copyOf(groups); palettes = Map.copyOf(rules);
+        regions = Map.copyOf(groups); palettes = Map.copyOf(rules); embedded = Map.copyOf(embeddedBlocks);
         revision = next; samples = payload.getLong("Samples");
     }
 }

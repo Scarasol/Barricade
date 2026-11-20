@@ -1,4 +1,4 @@
 {
   "replace": false,
-  "values": ["barricade:window_bars"]
+  "values": ["barricade:window_bars", "barricade:string_light_box"]
 }

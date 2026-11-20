@@ -3,7 +3,9 @@ package com.scarasol.barricade.client;
 import com.mojang.brigadier.Command;
 import com.scarasol.barricade.Barricade;
 import com.scarasol.barricade.network.PileNetwork;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.commands.Commands;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.*;
@@ -15,6 +17,7 @@ import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
 @Mod.EventBusSubscriber(modid = Barricade.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD, value = Dist.CLIENT)
 public final class BarricadeClient {
     private BarricadeClient() { }
+    public static boolean isEmbeddedAt(ClientLevel level, BlockPos pos) { return ClientPiles.isEmbeddedAt(level, pos); }
     @SubscribeEvent public static void setup(FMLClientSetupEvent event) {
         event.enqueueWork(() -> {
             ClientSampleCache.initialize();

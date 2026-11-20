@@ -2,11 +2,8 @@ package com.scarasol.barricade.window;
 
 import com.scarasol.barricade.Barricade;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.item.BlockItem;
-import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.level.block.Block;
-import net.minecraftforge.event.BuildCreativeModeTabContentsEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
@@ -29,17 +26,11 @@ public final class WindowBoards {
             helper.register(BARS_ID, new WindowBarsBlock());
         });
         event.register(ForgeRegistries.Keys.ITEMS, helper -> {
-            helper.register(ID, new BlockItem(BLOCK.get(), new Item.Properties()));
-            helper.register(BARS_ID, new BlockItem(BARS_BLOCK.get(), new Item.Properties()));
+            helper.register(ID, new WindowSealItem(BLOCK.get()));
+            helper.register(BARS_ID, new WindowSealItem(BARS_BLOCK.get()));
         });
     }
     @SubscribeEvent public static void setup(FMLCommonSetupEvent event) {
         event.enqueueWork(WindowBoardsNetwork::initialize);
-    }
-    @SubscribeEvent public static void creativeTab(BuildCreativeModeTabContentsEvent event) {
-        if (event.getTabKey() == CreativeModeTabs.FUNCTIONAL_BLOCKS) {
-            event.accept(ITEM);
-            event.accept(BARS_ITEM);
-        }
     }
 }

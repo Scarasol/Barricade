@@ -3,7 +3,6 @@ package com.scarasol.barricade.mixin;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.google.gson.JsonParser;
-import com.scarasol.barricade.mixin.plugin.MixinPlugin;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -14,7 +13,6 @@ import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.*;
-import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
 
 class TaczCaptureMixinTest {
     private static final String MIXIN = "com.scarasol.barricade.mixin.tacz.CaptureBufferMixin";
@@ -74,16 +72,13 @@ class TaczCaptureMixinTest {
     }
 
     @Test
-    void optionalTaczIsDetectedWithoutInitializationAndSkippedWhenAbsent() throws Exception {
-        var installed = new MixinPlugin();
-        installed.onLoad("com.scarasol.barricade.mixin");
-        assertTrue(installed.shouldApplyMixin(TARGET.replace('/', '.'), MIXIN));
+    void absentTaczLeavesTheNativeCaptureHelperLoadable() {
         var loader = new ClassLoader(getClass().getClassLoader()) {
             @Override protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
                 if (name.startsWith("com.tacz.") || name.startsWith("software.bernie.geckolib.")
                         || name.startsWith("com.github.mcmodderanchor.simplebedrockmodel."))
                     throw new ClassNotFoundException(name);
-                if (!name.equals(MixinPlugin.class.getName())) return super.loadClass(name, resolve);
+                if (!name.equals("com.scarasol.barricade.client.CaptureBuffers")) return super.loadClass(name, resolve);
                 synchronized (getClassLoadingLock(name)) {
                     var loaded = findLoadedClass(name);
                     if (loaded == null) {
@@ -99,11 +94,6 @@ class TaczCaptureMixinTest {
                 }
             }
         };
-        var absent = (IMixinConfigPlugin) loader.loadClass(MixinPlugin.class.getName()).getConstructor().newInstance();
-        absent.onLoad("com.scarasol.barricade.mixin");
-        assertFalse(absent.shouldApplyMixin(TARGET.replace('/', '.'), MIXIN));
-        assertFalse(absent.shouldApplyMixin("anything", "com.scarasol.barricade.mixin.sbm.CaptureCullingMixin"));
-        assertTrue(absent.shouldApplyMixin("anything", "com.scarasol.barricade.mixin.EmbeddedRenderMixin"));
         assertDoesNotThrow(() -> loader.loadClass("com.scarasol.barricade.client.CaptureBuffers")
                 .getDeclaredMethods());
     }

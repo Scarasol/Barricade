@@ -1,0 +1,12 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": ["ICI", "IRI", " L "],
+  "key": {
+    "I": {"item": "minecraft:iron_ingot"},
+    "C": {"item": "minecraft:copper_ingot"},
+    "R": {"item": "minecraft:redstone"},
+    "L": {"item": "minecraft:lever"}
+  },
+  "result": {"item": "barricade:string_light_box"}
+}

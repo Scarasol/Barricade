@@ -1,0 +1,34 @@
+// Run with -I src/gametest/string-lights.init.gradle. All game files stay below build/verification.
+gradle.projectsEvaluated {
+    def p = gradle.rootProject
+    def client = p.gradle.startParameter.taskNames.any { it.tokenize(':').last() == 'runClient' }
+    if (!client) {
+        // The development classpath includes a client-only mod which does not belong on a dedicated server.
+        p.configurations.runtimeClasspath.exclude(group: 'curse.maven', module: 'accelerated-rendering-1314021')
+    }
+    def source = p.sourceSets.create('gametest') {
+        compileClasspath += p.sourceSets.main.output + p.sourceSets.main.compileClasspath
+        runtimeClasspath += p.sourceSets.main.runtimeClasspath
+    }
+    def run = client ? p.minecraft.runs.client : p.minecraft.runs.gameTestServer
+    def mode = client ? 'client' : 'server'
+    def dir = p.layout.buildDirectory.dir("verification/string-lights-${mode}-${UUID.randomUUID()}").get().asFile
+    run.workingDirectory(dir)
+    run.property('forge.logging.console.level', 'info')
+    run.mods.barricade.source(source)
+    p.tasks.configureEach {
+        if (name != (client ? 'runClient' : 'runGameTestServer')) return
+        dependsOn(p.tasks.named('gametestClasses'))
+        workingDir(dir)
+        doFirst {
+            if (!client) classpath = classpath.filter { !it.name.startsWith('accelerated-rendering-') }
+            mkdir(dir)
+            p.copy {
+                from(p.file('src/gametest/resources/string_lights_empty.snbt'))
+                from(p.file('src/gametest/resources/frontline_empty.snbt'))
+                into(new File(dir, 'gameteststructures'))
+            }
+            logger.lifecycle("String lights ${mode} verification directory: ${dir}")
+        }
+    }
+}

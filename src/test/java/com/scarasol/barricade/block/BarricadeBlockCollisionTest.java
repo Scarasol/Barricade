@@ -25,6 +25,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.registries.ForgeRegistry;
 import net.minecraftforge.registries.WindowBoardsTestRegistries;
@@ -72,6 +73,16 @@ class BarricadeBlockCollisionTest {
             assertEquals(fence.getShape(level, POS).max(Direction.Axis.Y),
                     state.getShape(level, POS).max(Direction.Axis.Y));
         }
+    }
+
+    @Test void embeddedCollisionIncludesTheBarricadeAndPreservesAnyProtrudingBlockShape() {
+        var small = Shapes.box(.25, .25, .25, .75, .75, .75);
+        assertEquals(new AABB(0, 0, 0, 1, 1.5, 1),
+                EmbeddedCollision.includeBarricade(small).bounds());
+
+        var protruding = Shapes.box(-.25, 0, 0, 1.5, 2, 1);
+        assertEquals(new AABB(-.25, 0, 0, 1.5, 2, 1),
+                EmbeddedCollision.includeBarricade(protruding).bounds());
     }
 
     @Test void movementCollidesWithTheUpperHalfEvenWhenTheEntityIsEntirelyInTheCellAbove() {

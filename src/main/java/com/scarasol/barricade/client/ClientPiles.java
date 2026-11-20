@@ -7,6 +7,7 @@ import com.scarasol.barricade.recipe.*;
 import com.scarasol.barricade.sampling.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.Function;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
@@ -15,6 +16,7 @@ import net.minecraft.resources.ResourceLocation;
 
 /** Current snapshots -> frozen samples -> finite region packs -> overlay and render deltas. */
 final class ClientPiles {
+    private static final int FULL_QUERY_LIMIT = 512, PARTIAL_QUERY_LIMIT = 64;
     private static final Map<ResourceLocation, Incoming> INCOMING = new LinkedHashMap<>();
     private static ClientPiles current;
     private static long generation, resources;
@@ -34,7 +36,7 @@ final class ClientPiles {
     private CompletableFuture<Outcome> pending;
     private Future<?> job;
     private FieldOverlay overlay;
-    private UUID lastScheduled;
+    private final QuerySchedule queries = new QuerySchedule();
     private final FieldWorkCache<FieldRuntime> workCache = new FieldWorkCache<>(8, 500_000);
     private static final class Incoming {
         final UUID world;
@@ -43,14 +45,63 @@ final class ClientPiles {
         long latestTransfer = -1;
         Incoming(UUID world) { this.world = world; }
     }
-    private static final class FieldRuntime {
+    static final class FieldRuntime {
         final FieldDefinition definition;
         final List<PileModel> models;
         final FieldViewCache view = new FieldViewCache();
         FieldRuntime(FieldDefinition definition, List<PileModel> models) { this.definition = definition; this.models = List.copyOf(models); }
+        void synchronizeLayout(Collection<FieldRegion> regions) {
+            view.synchronizeBaseline(layoutBasis(regions, definition));
+            retainScope(regions);
+        }
+        void retainScope(Collection<FieldRegion> regions) {
+            Set<BlockPos> scope = new HashSet<>();
+            for (FieldRegion region : regions)
+                if (region.definition().equals(definition)) scope.addAll(region.domain());
+            view.retain(scope);
+        }
     }
-    private record Outcome(long ticket, long samples, FieldRuntime runtime, Set<BlockPos> cells,
-                           Set<BlockPos> baseline, List<FieldObject> objects) { }
+    record Outcome(long ticket, long samples, FieldRuntime runtime, Set<BlockPos> cells,
+                   Set<BlockPos> baseline, List<FieldObject> objects) {
+        boolean accept(long generation, long epoch, FieldRuntime current, Collection<FieldRegion> regions) {
+            if (ticket != generation || samples != epoch || current != runtime
+                    || !layoutBasis(regions, runtime.definition).equals(baseline)) return false;
+            runtime.view.accept(cells, objects);
+            return true;
+        }
+    }
+    record Query(FieldRuntime runtime, FieldRegion region, Set<BlockPos> missing, int limit) { }
+    static final class QuerySchedule {
+        private long idleRevision = Long.MIN_VALUE;
+        private UUID lastScheduled;
+
+        void wake() { idleRevision = Long.MIN_VALUE; }
+
+        Query next(FieldStore store, Map<FieldDefinition, FieldRuntime> fields, Set<FieldDefinition> failed,
+                   Function<FieldDefinition, FieldRuntime> prepare) {
+            if (idleRevision == store.revision()) return null;
+            var regions = store.regions().values();
+            for (FieldRegion region : queryOrder(regions, lastScheduled)) {
+                FieldDefinition definition = region.definition();
+                if (failed.contains(definition)) continue;
+                FieldRuntime runtime = fields.get(definition);
+                if (runtime == null) {
+                    runtime = prepare.apply(definition);
+                    if (runtime == null) {
+                        if (failed.contains(definition)) continue;
+                        return null; // Sampling is still in progress; retry after the next sampler tick.
+                    }
+                }
+                if (runtime.view.ready(region.domain())) continue;
+                var missing = runtime.view.missing(region.domain());
+                lastScheduled = region.id();
+                return new Query(runtime, region, missing, queryLimit(missing.size(), region, regions, fields, failed));
+            }
+            // Only an exhausted queue may sleep. Geometry changes on a new store revision or epoch.
+            idleRevision = store.revision();
+            return null;
+        }
+    }
     private ClientPiles(ClientLevel level, Incoming incoming) {
         this.level = level; this.incoming = incoming;
         epoch = incoming.store.samples(); resourceEpoch = resources;
@@ -90,13 +141,18 @@ final class ClientPiles {
         current.advance();
     }
     static void resourcesReloaded() { resources++; }
+    static boolean isEmbeddedAt(ClientLevel level, BlockPos pos) {
+        if (Minecraft.getInstance().level != level) return false;
+        Incoming input = INCOMING.get(level.dimension().location());
+        return input != null && input.store.embeddedAt(pos) != null;
+    }
     private void advance() {
         FieldStore store = incoming.store;
         if (resourceEpoch != resources) {
             if (job != null) job.cancel(true);
             if (pending != null) pending.cancel(false);
             pending = null; resourceEpoch = resources;
-            failed.clear(); GpuLayouts.reset();
+            failed.clear(); queries.wake(); GpuLayouts.reset();
         }
         if (epoch != store.samples()) {
             if (job != null) job.cancel(true);
@@ -105,19 +161,19 @@ final class ClientPiles {
             sampler.invalidateSamples();
             epoch = store.samples();
             sampler.context(ClientSampleCache.context(level, incoming.world, epoch)); GpuLayouts.reset();
-            terrain.clear(); overlayEpoch++; BarricadeRenderer.clear();
+            queries.wake(); terrain.clear(); overlayEpoch++; BarricadeRenderer.clear();
         }
-        Set<FieldDefinition> live = new HashSet<>();
-        store.regions().values().forEach(region -> live.add(region.definition()));
-        fields.keySet().retainAll(live); failed.retainAll(live);
+        boolean changed = stateRevision != store.revision();
+        if (changed) {
+            Set<FieldDefinition> live = new HashSet<>();
+            store.regions().values().forEach(region -> live.add(region.definition()));
+            fields.keySet().retainAll(live); failed.retainAll(live);
+        }
         if (pending != null && pending.isDone()) {
             try {
                 Outcome outcome = pending.join();
-                if (outcome.ticket == generation && outcome.samples == epoch
-                        && fields.get(outcome.runtime.definition) == outcome.runtime
-                        && layoutBasis(store, outcome.runtime.definition).equals(outcome.baseline)) {
-                    outcome.runtime.view.accept(outcome.cells, outcome.objects);
-                    retainScope(store, outcome.runtime);
+                if (outcome.accept(generation, epoch, fields.get(outcome.runtime.definition), store.regions().values())) {
+                    outcome.runtime.retainScope(store.regions().values());
                     displayed.replaceAll((id, revision) -> {
                         FieldRegion region = store.regions().get(id);
                         return region != null && region.definition().equals(outcome.runtime.definition) ? -1L : revision;
@@ -128,15 +184,12 @@ final class ClientPiles {
             catch (CompletionException exception) { Barricade.LOGGER.error("Required spatial field computation failed", exception.getCause()); }
             pending = null;
         }
-        if (stateRevision != store.revision() || (overlay == null && refreshComplete(store)
+        if (changed || (overlay == null && refreshComplete(store)
                 && (level.getGameTime() - overlayWorldTime >= 10 || overlayWorldTime < 0)
                 && store.regions().values().stream().anyMatch(region -> !region.embedded().isEmpty()))) {
-            if (stateRevision != store.revision()) {
+            if (changed) {
                 terrain.synchronize(displayedSnapshots, store.regions());
-                fields.values().forEach(runtime -> {
-                    runtime.view.synchronizeBaseline(layoutBasis(store, runtime.definition));
-                    retainScope(store, runtime);
-                });
+                fields.values().forEach(runtime -> runtime.synchronizeLayout(store.regions().values()));
             }
             stateRevision = store.revision();
             overlayWorldTime = level.getGameTime(); terrain.invalidateEmbedded(); overlayEpoch++;
@@ -146,57 +199,70 @@ final class ClientPiles {
         removeObsolete(store);
         sampler.tick();
         if (pending != null) return;
-        List<FieldRegion> schedule = new ArrayList<>(store.regions().values().stream()
-                .sorted(Comparator.comparing(FieldRegion::id)).toList());
-        for (int i = 0; i < schedule.size(); i++) if (schedule.get(i).id().equals(lastScheduled)) {
-            Collections.rotate(schedule, -i - 1); break;
+        Query query = queries.next(store, fields, failed, this::prepareField);
+        if (query == null) return;
+        FieldRuntime target = query.runtime;
+        FieldDefinition definition = target.definition;
+        Set<BlockPos> baseline = target.view.baseline();
+        BlockPos focus = Minecraft.getInstance().player == null ? query.region.domain().iterator().next()
+                : Minecraft.getInstance().player.blockPosition().immutable();
+        long samples = epoch;
+        Set<FieldRuntime> retained = Set.copyOf(fields.values());
+        CompletableFuture<Outcome> result = new CompletableFuture<>(); pending = result;
+        job = worker.submit(() -> {
+            try {
+                result.complete(GpuLayouts.prepare(() -> {
+                    Set<BlockPos> cells = FieldViewCache.nextBatch(query.missing, focus, query.limit);
+                    workCache.retain(retained);
+                    SpatialField field = workCache.acquire(target, () -> new SpatialField(
+                            level.dimension().location().toString(), definition, target.models, GpuLayouts::generate));
+                    try { return new Outcome(ticket, samples, target, cells, baseline,
+                            field.query(cells, baseline)); }
+                    finally { workCache.trim(target); }
+                }));
+            } catch (RuntimeException | LinkageError exception) { result.completeExceptionally(exception); }
+        });
+        result.whenComplete((ignored, error) -> {
+            if (error != null && !(error instanceof CancellationException))
+                Minecraft.getInstance().execute(() -> {
+                    if (ticket == generation && fields.get(definition) == target) failed.add(definition);
+                });
+        });
+    }
+    private FieldRuntime prepareField(FieldDefinition definition) {
+        FieldStore store = incoming.store;
+        try {
+            PaletteSpec palette = store.palette(definition.palette());
+            sampler.resourcesReloaded(level.getRecipeManager(), palette.resources());
+            var samples = sampler.prepare(palette);
+            if (!samples.isDone()) return null;
+            var models = samples.join();
+            if (models.isEmpty()) throw new IllegalArgumentException("No usable materials in selected or default tag");
+            FieldRuntime runtime = new FieldRuntime(definition, models);
+            runtime.view.synchronizeBaseline(layoutBasis(store.regions().values(), definition));
+            fields.put(definition, runtime);
+            return runtime;
+        } catch (RuntimeException | LinkageError exception) {
+            failed.add(definition); Barricade.LOGGER.error("Cannot freeze barricade material set", exception);
+            return null;
         }
-        for (FieldRegion region : schedule) {
-            FieldDefinition definition = region.definition();
-            if (failed.contains(definition)) continue;
-            FieldRuntime runtime = fields.get(definition);
-            if (runtime == null) {
-                try {
-                    PaletteSpec palette = store.palette(definition.palette());
-                    sampler.resourcesReloaded(level.getRecipeManager(), palette.resources());
-                    var samples = sampler.prepare(palette);
-                    if (!samples.isDone()) break;
-                    if (samples.join().isEmpty()) throw new IllegalArgumentException("No usable materials in selected or default tag");
-                    runtime = new FieldRuntime(definition, samples.join()); fields.put(definition, runtime);
-                } catch (RuntimeException | LinkageError exception) {
-                    failed.add(definition); Barricade.LOGGER.error("Cannot freeze barricade material set", exception); continue;
-                }
-            }
-            runtime.view.synchronizeBaseline(layoutBasis(store, definition));
-            Set<BlockPos> added = runtime.view.missing(region.domain());
-            if (added.isEmpty()) continue; // Deletion and embedding never submit a field solve.
-            FieldRuntime target = runtime;
-            Set<BlockPos> baseline = runtime.view.baseline();
-            BlockPos focus = Minecraft.getInstance().player == null ? region.domain().iterator().next()
-                    : Minecraft.getInstance().player.blockPosition().immutable();
-            long samples = epoch;
-            Set<FieldRuntime> retained = Set.copyOf(fields.values());
-            lastScheduled = region.id();
-            CompletableFuture<Outcome> result = new CompletableFuture<>(); pending = result;
-            job = worker.submit(() -> {
-                try {
-                    result.complete(GpuLayouts.prepare(() -> {
-                        Set<BlockPos> cells = FieldViewCache.nextBatch(added, focus, 64);
-                        workCache.retain(retained);
-                        SpatialField field = workCache.acquire(target, () -> new SpatialField(
-                                level.dimension().location().toString(), definition, target.models, GpuLayouts::generate));
-                        try { return new Outcome(ticket, samples, target, cells, baseline,
-                                field.query(cells, baseline)); }
-                        finally { workCache.trim(target); }
-                    }));
-                } catch (RuntimeException | LinkageError exception) { result.completeExceptionally(exception); }
-            });
-            result.whenComplete((ignored, error) -> {
-                if (error != null && !(error instanceof CancellationException))
-                    Minecraft.getInstance().execute(() -> { if (ticket == generation) failed.add(definition); });
-            });
-            break;
+    }
+    static List<FieldRegion> queryOrder(Collection<FieldRegion> regions, UUID after) {
+        // Start at the cursor's successor even if the last region disappeared during its query.
+        return regions.stream().sorted(Comparator
+                .comparing((FieldRegion region) -> after != null && region.id().compareTo(after) <= 0)
+                .thenComparing(FieldRegion::id)).toList();
+    }
+    static int queryLimit(int missing, FieldRegion selected, Collection<FieldRegion> regions,
+                          Map<FieldDefinition, FieldRuntime> fields, Set<FieldDefinition> failed) {
+        if (missing > FULL_QUERY_LIMIT) return PARTIAL_QUERY_LIMIT;
+        if (missing > PARTIAL_QUERY_LIMIT) for (FieldRegion other : regions) {
+            if (other.id().equals(selected.id()) || failed.contains(other.definition())) continue;
+            FieldRuntime peer = fields.get(other.definition());
+            if (peer == null || !peer.view.ready(other.domain())) return PARTIAL_QUERY_LIMIT;
         }
+        // The whole region must be ready anyway, but do not expand a turn while another region waits.
+        return FULL_QUERY_LIMIT;
     }
     private void publish(FieldStore store) {
         long start = System.nanoTime();
@@ -214,7 +280,7 @@ final class ClientPiles {
         }
         if (overlay != null) {
             boolean ready = false;
-            try { ready = overlay.advance(terrain, 64, start + 2_000_000); }
+            try { ready = overlay.advanceForTick(terrain, start, System::nanoTime); }
             catch (RuntimeException | LinkageError exception) {
                 Barricade.LOGGER.warn("Current obstacle/embedded geometry unavailable: {}", exception.toString());
                 // Keep the last complete display and retry a complete current overlay later.
@@ -237,15 +303,9 @@ final class ClientPiles {
                     || Objects.equals(displayed.get(region.id()), region.revision());
         });
     }
-    private static void retainScope(FieldStore store, FieldRuntime runtime) {
-        Set<BlockPos> scope = new HashSet<>();
-        for (FieldRegion region : store.regions().values())
-            if (region.definition().equals(runtime.definition)) scope.addAll(region.domain());
-        runtime.view.retain(scope);
-    }
-    private static Set<BlockPos> layoutBasis(FieldStore store, FieldDefinition definition) {
+    private static Set<BlockPos> layoutBasis(Collection<FieldRegion> regions, FieldDefinition definition) {
         Set<BlockPos> result = new HashSet<>();
-        for (FieldRegion region : store.regions().values())
+        for (FieldRegion region : regions)
             if (region.definition().equals(definition)) result.addAll(region.baseline());
         return Set.copyOf(result);
     }

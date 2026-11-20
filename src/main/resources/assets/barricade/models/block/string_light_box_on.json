@@ -1,0 +1,4 @@
+{
+  "parent": "barricade:block/string_light_box",
+  "textures": {"front": "barricade:block/string_light_box_on"}
+}

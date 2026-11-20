@@ -9,9 +9,9 @@ import org.joml.Intersectionf;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 
-/** Test-only precise-mesh reference; production uses one whole-model oriented box. */
+/** Narrow phase for embedded models whose bounds overlap a barricade piece. */
 final class VisualOverlap {
-    static final float TOLERANCE = 1f / 32;
+    private static final float TOLERANCE = TerrainShapes.TOLERANCE;
     private static final float EPSILON = 0.00001f;
     private static final Vector3f[] RAYS = {
             new Vector3f(1, .173f, .267f).normalize(),

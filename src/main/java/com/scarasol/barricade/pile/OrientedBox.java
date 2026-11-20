@@ -35,6 +35,15 @@ public final class OrientedBox {
     }
     public OrientedBox translated(float x, float y, float z) { return new OrientedBox(this, x, y, z); }
 
+    private OrientedBox(OrientedBox source, float scale) {
+        center = source.center;
+        axisX = source.axisX; axisY = source.axisY; axisZ = source.axisZ;
+        half = new Vector3f(source.half).mul(scale);
+        extent = new Vector3f(source.extent).mul(scale);
+    }
+
+    public OrientedBox scaledAboutCenter(float scale) { return new OrientedBox(this, scale); }
+
     public boolean intersects(OrientedBox other, float inset) {
         float expansion = Math.max(0, -inset);
         if (Math.abs(center.x - other.center.x) >= extent.x + other.extent.x

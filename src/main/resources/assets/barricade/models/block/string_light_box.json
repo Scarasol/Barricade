@@ -1,0 +1,22 @@
+{
+  "parent": "minecraft:block/block",
+  "textures": {
+    "particle": "barricade:block/string_light_box",
+    "front": "barricade:block/string_light_box",
+    "steel": "barricade:block/string_light_box"
+  },
+  "elements": [
+    {
+      "from": [3, 3, 10],
+      "to": [13, 13, 16],
+      "faces": {
+        "north": {"texture": "#front", "uv": [0, 0, 10, 10]},
+        "south": {"texture": "#steel", "uv": [0, 6, 10, 16]},
+        "east": {"texture": "#steel", "uv": [10, 0, 16, 10]},
+        "west": {"texture": "#steel", "uv": [10, 0, 16, 10]},
+        "up": {"texture": "#steel", "uv": [0, 10, 10, 16]},
+        "down": {"texture": "#steel", "uv": [0, 10, 10, 16]}
+      }
+    }
+  ]
+}

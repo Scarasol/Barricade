@@ -5,6 +5,8 @@ import com.scarasol.barricade.pile.*;
 import com.scarasol.barricade.recipe.*;
 import com.scarasol.barricade.sampling.MemoryFixture;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Blocks;
 import org.joml.Quaternionf;
@@ -24,6 +26,67 @@ class FieldOverlayTest {
 
     private static FieldRegion region(Set<BlockPos> domain, SpatialMask mask) {
         return new FieldRegion(new UUID(0, 1), 1, DEFINITION, domain, mask, Map.of());
+    }
+
+    @Test void tickUsesTimeInsteadOf64CandidatesAndKeepsTheSelectionAtomic() {
+        var world = MemoryFixture.create(false);
+        var terrain = new TerrainShapes(world, ignored -> true);
+        var region = region(Set.of(BlockPos.ZERO), new SpatialMask());
+        List<FieldObject> objects = new ArrayList<>();
+        for (int id = 0; id < 200; id++) objects.add(object(BlockPos.ZERO, id, -.4f));
+        var overlay = new FieldOverlay(region, 1, objects, List.of(region));
+        assertFalse(overlay.advanceForTick(terrain, 0, () -> 2_000_000));
+        assertThrows(IllegalStateException.class, overlay::visible);
+        AtomicLong time = new AtomicLong(0);
+        assertFalse(overlay.advanceForTick(terrain, 0, () -> time.getAndAdd(20_000)));
+        assertThrows(IllegalStateException.class, overlay::visible);
+        assertTrue(overlay.advanceForTick(terrain, time.get(), time::getAndIncrement));
+        assertEquals(objects, overlay.visible());
+
+        var cheap = new FieldOverlay(region, 1, objects, List.of(region));
+        assertTrue(cheap.advanceForTick(terrain, 0, () -> 0));
+        assertEquals(objects, cheap.visible());
+    }
+
+    @Test void tickResumesFallbackWithoutExposingUnfinishedOwners() {
+        var world = MemoryFixture.create(false);
+        BlockPos first = BlockPos.ZERO, second = first.south(4);
+        world.context(Map.of(first.east(), Blocks.STONE.defaultBlockState(),
+                second.east(), Blocks.STONE.defaultBlockState()), Map.of());
+        var terrain = new TerrainShapes(world, ignored -> true);
+        var region = region(Set.of(first, second), new SpatialMask());
+        var worst = object(first, 0, .14f);
+        var best = object(first, 1, .06f);
+        var other = object(second, 0, .08f);
+        var overlay = new FieldOverlay(region, 1, List.of(worst, other, best), List.of(region));
+        AtomicLong time = new AtomicLong(0);
+        assertFalse(overlay.advanceForTick(terrain, 0, () -> time.getAndAdd(500_000)),
+                "Three candidates and only the first fallback fit");
+        assertThrows(IllegalStateException.class, overlay::visible);
+        assertTrue(overlay.advanceForTick(terrain, time.get(), time::getAndIncrement));
+        assertEquals(Set.of(best, other), Set.copyOf(overlay.visible()));
+        assertEquals(2, overlay.visible().size());
+    }
+
+    @Test void tickDoesNotSuppressAnObjectWithoutEvidenceOfAnEmbeddedConflict() {
+        var world = MemoryFixture.create(false);
+        BlockPos cell = BlockPos.ZERO, host = cell.east();
+        world.context(Map.of(host, Blocks.STONE.defaultBlockState()), Map.of());
+        var source = region(Set.of(cell), new SpatialMask());
+        var embedded = new FieldRegion(new UUID(0, 2), 1, DEFINITION, Set.of(host), new SpatialMask(),
+                Map.of(host, new EmbeddedBlock(host, 7, 1)));
+        var object = object(cell, 0, -.4f);
+        var loaded = new AtomicBoolean(false);
+        var terrain = new TerrainShapes(world, pos -> !pos.equals(host) || loaded.get(), ignored -> null);
+        var updating = new FieldOverlay(source, 1, List.of(object), List.of(source, embedded));
+        assertTrue(updating.advanceForTick(terrain, 0, () -> 0));
+        assertEquals(List.of(object), updating.visible(), "An unavailable anchor cannot establish a conflict");
+        loaded.set(true);
+        terrain.invalidateEmbedded();
+        var refreshed = new FieldOverlay(source, 2, List.of(object), List.of(source, embedded));
+        assertTrue(refreshed.advanceForTick(terrain, 0, () -> 0));
+        assertEquals(List.of(object), refreshed.visible());
+        assertEquals(0, world.chunkRequests());
     }
 
     @Test void oneThirtySecondIsAllowedAndRejectedCandidatesStayHiddenWhenOnePasses() {

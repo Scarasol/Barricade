@@ -1,0 +1,16 @@
+{
+  "variants": {
+    "facing=north,powered=false": {"model": "barricade:block/string_light_box"},
+    "facing=east,powered=false": {"model": "barricade:block/string_light_box", "y": 90},
+    "facing=south,powered=false": {"model": "barricade:block/string_light_box", "y": 180},
+    "facing=west,powered=false": {"model": "barricade:block/string_light_box", "y": 270},
+    "facing=up,powered=false": {"model": "barricade:block/string_light_box", "x": 270},
+    "facing=down,powered=false": {"model": "barricade:block/string_light_box", "x": 90},
+    "facing=north,powered=true": {"model": "barricade:block/string_light_box_on"},
+    "facing=east,powered=true": {"model": "barricade:block/string_light_box_on", "y": 90},
+    "facing=south,powered=true": {"model": "barricade:block/string_light_box_on", "y": 180},
+    "facing=west,powered=true": {"model": "barricade:block/string_light_box_on", "y": 270},
+    "facing=up,powered=true": {"model": "barricade:block/string_light_box_on", "x": 270},
+    "facing=down,powered=true": {"model": "barricade:block/string_light_box_on", "x": 90}
+  }
+}
